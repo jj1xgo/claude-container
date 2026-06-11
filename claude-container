@@ -86,7 +86,9 @@ if [[ -z "${TZ:-}" ]]; then
 fi
 
 if [[ $BUILD -eq 1 ]]; then
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm --build claude-auth-workspace
+  CACHEBUST="$(date +%s)" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm --build claude-auth-workspace
 else
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
+  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
 fi

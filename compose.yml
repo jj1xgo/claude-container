@@ -6,6 +6,7 @@ services:
       dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude
       args:
         TZ: ${TZ:-UTC}
+        CACHEBUST: ${CACHEBUST:-unknown}
     stdin_open: true
     tty: true
     userns_mode: keep-id

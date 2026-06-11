@@ -50,10 +50,15 @@ USER node
 RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> /home/node/.bashrc \
   && echo "export HISTFILE=/workspace/.claude/bash_history" >> /home/node/.bashrc
 
+# Cache-bust marker: value changes on every `-b` run so this layer (and below)
+# is never reused from cache, guaranteeing the latest Claude Code is fetched.
+ARG CACHEBUST=unknown
+
 # Install Claude Code via official native installer (Recommended method)
 # Installs to ~/.local/bin/claude (symlink) and ~/.local/share/claude (binary)
 # Auto-updater is disabled via settings.json since container is --rm
-RUN curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CODE_VERSION}
+RUN echo "cachebust=${CACHEBUST}" \
+  && curl -fsSL https://claude.ai/install.sh | bash -s ${CLAUDE_CODE_VERSION}
 
 # Add ~/.local/bin to PATH (where native installer places the symlink)
 ENV PATH=/home/node/.local/bin:$PATH
