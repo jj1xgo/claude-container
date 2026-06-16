@@ -50,6 +50,9 @@ USER node
 RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> /home/node/.bashrc \
   && echo "export HISTFILE=/workspace/.claude/bash_history" >> /home/node/.bashrc
 
+COPY --chown=node:node entrypoint.sh /home/node/entrypoint.sh
+RUN chmod +x /home/node/entrypoint.sh
+
 # Cache-bust marker: value changes on every `-b` run so this layer (and below)
 # is never reused from cache, guaranteeing the latest Claude Code is fetched.
 ARG CACHEBUST=unknown
@@ -63,4 +66,4 @@ RUN echo "cachebust=${CACHEBUST}" \
 # Add ~/.local/bin to PATH (where native installer places the symlink)
 ENV PATH=/home/node/.local/bin:$PATH
 
-CMD ["claude", "--dangerously-skip-permissions"]
+CMD ["/home/node/entrypoint.sh"]

@@ -30,11 +30,12 @@ These can be set in a `.env` file at the target project root — it is sourced a
 
 ## Architecture
 
-Three files work together:
+Five files work together:
 
 - **`claude-container`** (bash) — entry point. Resolves absolute paths, loads `.env`, then sets `CONTEXT` and `CLAUDE_CONTAINER_DIR` and delegates to `podman compose run`. When `-b` is passed, sets `CACHEBUST` to the current epoch seconds so the install layer is always rebuilt.
 - **`compose.yml`** — defines the single service `claude-auth-workspace`. Mounts the host's `~/.claude.json` and `~/.claude/` (auth + config) plus the target workspace at `/workspace`. Uses `userns_mode: keep-id` so files inside the container have the same UID as the host user. Passes `CACHEBUST` as a build arg to enable cache-busting on `-b`.
 - **`Dockerfile.claude`** — builds on `debian:stable` (currently trixie), installs Claude Code dependencies and project-specific packages, then installs Claude Code via the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`). An `ARG CACHEBUST` is declared immediately before the install step and referenced in the `RUN` command; this ensures the install layer (and everything below) is never served from cache when `-b` is used. Runs as the non-root `node` user (UID 1000, created explicitly) with `CMD ["claude", "--dangerously-skip-permissions"]`. `debian:stable` を採用した理由: 公式推奨インストール方法が native installer に変わり、Claude Code のネイティブバイナリは glibc のみ依存で Node.js を実行時に必要としない。Node.js 同梱の `node:24`（約 1.1 GB）は不要になったため軽量な Debian ベースに切り替え、最終イメージサイズを大幅に削減。slim ではなく full 版を使う理由: `ca-certificates` が同梱されており、HTTPS apt の順序問題を回避できる。
+- **`entrypoint.sh`** — コンテナ起動時に実行されるシェルスクリプト。`~/.claude/plugins/` 内の設定ファイルに残存するホスト側ユーザーのパス（例: `/home/tsu/.claude`）をコンテナ内パス（`/home/node/.claude`）に自動修正してから `claude --dangerously-skip-permissions` を起動する。ホスト側とコンテナ内でユーザー名が異なる環境でのプラグインパス不整合を吸収するための仕組み。
 - **`packages.txt`** — project-specific apt package list. One package per line; lines starting with `#` are treated as comments and ignored.
 - **`requirements.txt`** — project-specific pip package list, passed directly to `pip3 install -r`.
 
