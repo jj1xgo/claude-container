@@ -1,2 +1,11 @@
-numpy
-requests
+# コンテナのシステム Python（pip3 install --break-system-packages）に直接入れる
+# pip パッケージを記述するファイル。
+#
+# findsummits の Python 依存（requests/openpyxl/shapely/numpy/pillow など）は
+# findsummits 側の requirements.txt + `make venv-rebuild` でプロジェクトルートの
+# venv/ 内に隔離構築されるため、ここには記述しない。
+# findsummits の venv 構築・ビルドに必要なシステム側の道具（make/python3-venv/
+# python3-pip など）は packages.txt 側で管理している。
+#
+# venv の外（システム Python）で動かすスクリプト等が必要とするパッケージが出た
+# 場合のみ、ここに 1 行 1 パッケージで追記する。
