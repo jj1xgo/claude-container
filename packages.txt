@@ -1,8 +1,7 @@
-# findsummits build
-make
-gcc
-libpng-dev
-
-# findsummits scripts
-python3-venv
-python3-pip
+# claude-container のデフォルト apt パッケージ一覧。
+# プロジェクト側の .claude-container.d/packages.txt が無い場合にのみ
+# フォールバックとして使用される。1行1パッケージ、# 始まりはコメント。
+#
+# claude-container は汎用ツールのため、ここにプロジェクト固有のパッケージを
+# 書かないこと。プロジェクト固有のパッケージは各プロジェクト側の
+# .claude-container.d/packages.txt に記載する。

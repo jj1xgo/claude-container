@@ -2,7 +2,7 @@ services:
   # Service with auth and workspace mounts
   claude-auth-workspace:
     build:
-      context: ${CLAUDE_CONTAINER_DIR}
+      context: ${BUILD_CONTEXT_DIR}
       dockerfile: ${CLAUDE_CONTAINER_DIR}/Dockerfile.claude
       args:
         TZ: ${TZ:-UTC}

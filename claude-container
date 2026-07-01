@@ -43,11 +43,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
+
 if [[ $CLEAN -eq 1 ]]; then
   echo "Removing image: $IMAGE_NAME"
   podman rmi "$IMAGE_NAME" 2>/dev/null && echo "Removed." || echo "Image not found, skipping."
   echo "Removing network: claude-container_default"
   podman network rm claude-container_default 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
+  echo "Removing staged build context: $RUN_DIR/.build-context"
+  rm -rf "$RUN_DIR/.build-context" && echo "Removed." || echo "Not found, skipping."
   echo "Pruning dangling images..."
   podman image prune -f
   exit 0
@@ -60,7 +64,6 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
-RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
 echo "RUN DIR: $RUN_DIR"
 
 WORKING_DIR=$( cd "$1" > /dev/null && pwd )
@@ -71,6 +74,41 @@ if [[ -f "$WORKING_DIR/.claude-container" ]]; then
   set -a
   source "$WORKING_DIR/.claude-container"
   set +a
+fi
+
+# プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
+PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
+# ビルドコンテキストのステージング先。mktemp のようなランダムパスは使わず固定パスにすることで、
+# ビルドキャッシュを安定させ、trap によるクリーンアップも不要にする。
+BUILD_CONTEXT_DIR="$RUN_DIR/.build-context"
+
+# entrypoint.sh / packages.txt / requirements.txt をビルドコンテキストへ集約する。
+# packages.txt・requirements.txt はプロジェクト側の .claude-container.d/ にあればそちらを、
+# なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
+stage_build_context() {
+  mkdir -p "$BUILD_CONTEXT_DIR"
+  cp "$RUN_DIR/entrypoint.sh" "$BUILD_CONTEXT_DIR/entrypoint.sh"
+
+  if [[ -f "$PROJECT_CONF_DIR/packages.txt" ]]; then
+    cp "$PROJECT_CONF_DIR/packages.txt" "$BUILD_CONTEXT_DIR/packages.txt"
+  else
+    cp "$RUN_DIR/packages.txt" "$BUILD_CONTEXT_DIR/packages.txt"
+  fi
+
+  if [[ -f "$PROJECT_CONF_DIR/requirements.txt" ]]; then
+    cp "$PROJECT_CONF_DIR/requirements.txt" "$BUILD_CONTEXT_DIR/requirements.txt"
+  else
+    cp "$RUN_DIR/requirements.txt" "$BUILD_CONTEXT_DIR/requirements.txt"
+  fi
+}
+
+# compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
+mkdir -p "$BUILD_CONTEXT_DIR"
+
+# -b 指定時、またはイメージが未ビルドのときのみステージングを実行する
+# （podman image exists が使えない古い podman では `podman images -q` ベースの判定に読み替える）
+if [[ $BUILD -eq 1 ]] || ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
+  stage_build_context
 fi
 
 # ホストのタイムゾーンを自動検出（.env で上書き済みでなければ設定）
@@ -87,8 +125,10 @@ fi
 
 if [[ $BUILD -eq 1 ]]; then
   CACHEBUST="$(date +%s)" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm --build claude-auth-workspace
 else
   CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+    BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
 fi

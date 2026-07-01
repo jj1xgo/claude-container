@@ -46,7 +46,9 @@ log ""
 
 log "## 静的チェック"
 check "bash -n claude-container" bash -n "${SCRIPT_DIR}/claude-container"
-check "podman compose config" podman compose -f "${SCRIPT_DIR}/compose.yml" config
+check "podman compose config" env \
+  CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context" CONTEXT="$SCRIPT_DIR" \
+  podman compose -f "${SCRIPT_DIR}/compose.yml" config
 log ""
 
 log "## ビルド"
@@ -66,11 +68,25 @@ check "gh --version"     podman run --rm "$IMAGE" gh --version
 check "jq --version"     podman run --rm "$IMAGE" jq --version
 log ""
 
-log "## findsummits 依存"
-check "gcc --version"    podman run --rm "$IMAGE" gcc --version
-check "make --version"   podman run --rm "$IMAGE" make --version
-check "python3 + numpy"  podman run --rm "$IMAGE" \
-  python3 -c "import numpy; print(numpy.__version__)"
+log "## .claude-container.d によるパッケージ上書き"
+OVERRIDE_IMAGE="localhost/claude-test-override"
+OVERRIDE_PROJECT_DIR="$(mktemp -d)"
+OVERRIDE_CONTEXT_DIR="$(mktemp -d)"
+mkdir -p "$OVERRIDE_PROJECT_DIR/.claude-container.d"
+echo "htop" > "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt"
+
+# claude-container スクリプトが行うステージング（entrypoint.sh + プロジェクト側
+# packages.txt/requirements.txt をビルドコンテキストへ集約する処理）を模して検証する
+cp "${SCRIPT_DIR}/entrypoint.sh" "$OVERRIDE_CONTEXT_DIR/entrypoint.sh"
+cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
+cp "${SCRIPT_DIR}/requirements.txt" "$OVERRIDE_CONTEXT_DIR/requirements.txt"
+
+check "podman build (override context)" podman build --no-cache \
+  -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OVERRIDE_IMAGE" "$OVERRIDE_CONTEXT_DIR"
+check "htop が入っている"  podman run --rm "$OVERRIDE_IMAGE" which htop
+
+podman rmi "$OVERRIDE_IMAGE" 2>/dev/null
+rm -rf "$OVERRIDE_PROJECT_DIR" "$OVERRIDE_CONTEXT_DIR"
 log ""
 
 log "## TZ"
