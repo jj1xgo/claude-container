@@ -1,2 +1,5 @@
 tmp
 .build-context
+.claude/lessons.md
+.claude/handovers/
+.claude/incidents/
