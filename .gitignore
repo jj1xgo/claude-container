@@ -3,3 +3,5 @@ tmp
 .claude/lessons.md
 .claude/handovers/
 .claude/incidents/
+.claude/history.jsonl
+.claude/projects/
