@@ -37,12 +37,22 @@ add_cidr() {
   iptables -A "$CHAIN" -d "$cidr" -j ACCEPT
 }
 
-# GitHub IP ranges (git/gh over HTTPS and SSH)
+# GitHub IP ranges (git/gh over HTTPS and SSH). The live fetch counts against
+# the unauthenticated GitHub API rate limit (60 req/h per IP), so when it fails
+# fall back to the snapshot baked into the image at build time — the ranges
+# change rarely enough for a stale copy to stay usable.
+GH_META_SNAPSHOT=/etc/claude-container/github-meta.json
 echo "Fetching GitHub IP ranges..."
-gh_ranges=$(curl -fsS https://api.github.com/meta)
-if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null; then
-  echo "ERROR: GitHub API response missing required fields" >&2
-  exit 1
+if gh_ranges=$(curl -fsS https://api.github.com/meta) \
+   && echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+  echo "Using live GitHub meta"
+else
+  echo "WARNING: live GitHub meta fetch failed (rate limit?); using build-time snapshot" >&2
+  gh_ranges=$(cat "$GH_META_SNAPSHOT" 2>/dev/null || true)
+  if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+    echo "ERROR: GitHub meta snapshot at $GH_META_SNAPSHOT is missing or invalid" >&2
+    exit 1
+  fi
 fi
 while read -r cidr; do
   add_cidr "$cidr" "GitHub meta"
@@ -132,11 +142,13 @@ if curl --connect-timeout 5 -s https://example.com >/dev/null 2>&1; then
   exit 1
 fi
 echo "Verification passed - unable to reach https://example.com as expected"
-if ! curl --connect-timeout 10 -s https://api.github.com/zen >/dev/null 2>&1; then
-  echo "ERROR: Firewall verification failed - unable to reach https://api.github.com" >&2
+# TCP connect only (no HTTP request) so verification doesn't consume the
+# unauthenticated GitHub API rate limit on every container start.
+if ! timeout 10 bash -c 'exec 3<>/dev/tcp/api.github.com/443' 2>/dev/null; then
+  echo "ERROR: Firewall verification failed - unable to reach api.github.com:443" >&2
   exit 1
 fi
-echo "Verification passed - able to reach https://api.github.com as expected"
+echo "Verification passed - able to reach api.github.com:443 as expected"
 if ! curl --connect-timeout 10 -s -o /dev/null https://api.anthropic.com; then
   echo "ERROR: Firewall verification failed - unable to reach https://api.anthropic.com" >&2
   exit 1
