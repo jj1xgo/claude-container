@@ -5,7 +5,6 @@ trap 'exit 1' INT
 
 BUILD=0
 CLEAN=0
-IMAGE_NAME="localhost/claude-container_claude-auth-workspace"
 
 usage() {
   cat <<EOF
@@ -14,9 +13,12 @@ Usage: $(basename "$0") [OPTIONS] <directory>
 Launch a containerized Claude workspace in the given directory.
 
 Options:
-  -b, --build    Force a rebuild of the container image
-  --clean        Remove the container image and dangling images, then exit
-  -h, --help     Show this help message and exit
+  -b, --build          Force a rebuild of the container image
+  --clean <directory>  Remove the image, network, and staged build context
+                        for that project only, then exit
+  --clean              (no directory) Remove all projects' images,
+                        networks, and staged build contexts, then exit
+  -h, --help            Show this help message and exit
 EOF
 }
 
@@ -45,19 +47,48 @@ done
 
 RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
 
-if [[ $CLEAN -eq 1 ]]; then
-  echo "Removing image: $IMAGE_NAME"
-  podman rmi "$IMAGE_NAME" 2>/dev/null && echo "Removed." || echo "Image not found, skipping."
-  echo "Removing network: claude-container_default"
-  podman network rm claude-container_default 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
-  echo "Removing staged build context: $RUN_DIR/.build-context"
+# 実在するプロジェクトイメージ（localhost/<project>_claude-auth-workspace）から
+# <project> を逆算し、イメージ・ネットワーク・ビルドコンテキストをまとめて削除する。
+# レガシー共有イメージ localhost/claude-container_claude-auth-workspace もこの
+# パターンに自然にマッチするため、移行用の特別処理は不要。
+clean_all() {
+  local repo project found=0
+  while IFS= read -r repo; do
+    [[ -n "$repo" ]] || continue
+    found=1
+    project="${repo#localhost/}"
+    project="${project%_claude-auth-workspace}"
+    echo "Removing image: $repo"
+    podman rmi "$repo" 2>/dev/null && echo "Removed." || echo "Failed, skipping."
+    echo "Removing network: ${project}_default"
+    podman network rm "${project}_default" 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
+  done < <(podman images --format '{{.Repository}}' 2>/dev/null | grep -E '^localhost/.+_claude-auth-workspace$' || true)
+  [[ $found -eq 1 ]] || echo "No claude-container images found, skipping image/network removal."
+  echo "Removing staged build contexts: $RUN_DIR/.build-context"
   rm -rf "$RUN_DIR/.build-context" && echo "Removed." || echo "Not found, skipping."
   echo "Pruning dangling images..."
   podman image prune -f
-  exit 0
-fi
+}
+
+# 現在のターゲットプロジェクト（$IMAGE_NAME / $PROJECT_NAME / $BUILD_CONTEXT_DIR）分のみを削除する。
+clean_project() {
+  echo "Removing image: $IMAGE_NAME"
+  podman rmi "$IMAGE_NAME" 2>/dev/null && echo "Removed." || echo "Image not found, skipping."
+  echo "Removing network: ${PROJECT_NAME}_default"
+  podman network rm "${PROJECT_NAME}_default" 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
+  echo "Removing staged build context: $BUILD_CONTEXT_DIR"
+  rm -rf "$BUILD_CONTEXT_DIR" && echo "Removed." || echo "Not found, skipping."
+  echo "Pruning dangling images..."
+  podman image prune -f
+}
 
 set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+
+# --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
+if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
+  clean_all
+  exit 0
+fi
 
 if [[ $# -eq 0 ]]; then
   usage
@@ -69,6 +100,36 @@ echo "RUN DIR: $RUN_DIR"
 WORKING_DIR=$( cd "$1" > /dev/null && pwd )
 cd "$WORKING_DIR" || exit 1
 
+# ターゲットプロジェクトごとにイメージ名・ビルドコンテキストを分離するためのキー。
+# サニタイズ済み basename + 絶対パスの sha256 先頭8文字（衝突回避）。同名だが別パスの
+# プロジェクト同士がイメージ・ビルドコンテキストを共有してしまう事故を、可読性より
+# 安全性を優先して防ぐ。
+compute_project_name() {
+  local base hash
+  base=$(basename "$WORKING_DIR" | tr '[:upper:]' '[:lower:]')
+  base=$(printf '%s' "$base" | LC_ALL=C sed -E 's/[^a-z0-9_-]+/-/g; s/^-+//; s/-+$//')
+  base=${base:0:40}
+  [[ -n "$base" ]] || base="project"
+  hash=$(printf '%s' "$WORKING_DIR" | sha256sum | cut -c1-8)
+  PROJECT_NAME="${base}-${hash}"
+  IMAGE_NAME="localhost/${PROJECT_NAME}_claude-auth-workspace"
+}
+compute_project_name
+echo "PROJECT: $PROJECT_NAME"
+
+# プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
+PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
+# ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
+# ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
+# クリーンアップも不要にする。
+BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
+
+# --clean <directory>: このプロジェクト分のみ削除して終了
+if [[ $CLEAN -eq 1 ]]; then
+  clean_project
+  exit 0
+fi
+
 # プロジェクトの .claude-container ファイルがあれば KEY=VALUE 行のみ環境変数として取り込む。
 # source だと利用側プロジェクトのファイルがホスト上で任意コード実行できてしまうため、
 # 変数代入以外の行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
@@ -79,12 +140,6 @@ if [[ -f "$WORKING_DIR/.claude-container" ]]; then
     export "$line"
   done < "$WORKING_DIR/.claude-container"
 fi
-
-# プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
-PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
-# ビルドコンテキストのステージング先。mktemp のようなランダムパスは使わず固定パスにすることで、
-# ビルドキャッシュを安定させ、trap によるクリーンアップも不要にする。
-BUILD_CONTEXT_DIR="$RUN_DIR/.build-context"
 
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
@@ -106,14 +161,19 @@ stage_build_context() {
 
   # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
   # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
-  # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は前回ステージング分（.build-context/
-  # は --clean まで永続する）を警告付きで再利用し、それも無ければビルドを止める。
-  local gh_meta
+  # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は (1) このプロジェクトの前回
+  # ステージング分（.build-context/<project>/ は --clean まで永続する）、(2) それも無ければ
+  # 他プロジェクトの最新スナップショット（GitHub IP レンジは変更頻度が低いため実用上問題ない）
+  # を警告付きで再利用し、いずれも無ければビルドを止める。
+  local gh_meta sibling
   if gh_meta=$(curl -fsS https://api.github.com/meta) \
      && echo "$gh_meta" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     echo "$gh_meta" > "$BUILD_CONTEXT_DIR/github-meta.json"
   elif [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then
     echo "WARNING: live GitHub meta fetch failed (rate limit?); reusing previously staged snapshot" >&2
+  elif sibling=$(ls -t "$RUN_DIR"/.build-context/*/github-meta.json 2>/dev/null | head -1) && [[ -n "$sibling" ]]; then
+    echo "WARNING: live GitHub meta fetch failed and no snapshot for this project; reusing another project's snapshot ($sibling)" >&2
+    cp "$sibling" "$BUILD_CONTEXT_DIR/github-meta.json"
   else
     echo "ERROR: failed to fetch GitHub meta and no previous snapshot exists (rate limit? retry after it resets)" >&2
     exit 1
@@ -143,13 +203,13 @@ fi
 
 # -b のビルドは run と分離して実行する。`run --build` はビルド失敗時に
 # 既存の古いイメージでそのまま起動してしまう（fail-open）ため、
-# build を独立させ set -e で失敗時に起動へ進まないようにする（fail-closed）。
+# build を独立させ set -e で失敗時に起動へ進ませないようにする（fail-closed）。
 if [[ $BUILD -eq 1 ]]; then
   CACHEBUST="$(date +%s)" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
     BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" --in-pod false build claude-auth-workspace
+    podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false build claude-auth-workspace
 fi
 
 CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
   BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
-  podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
+  podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false run --rm claude-auth-workspace

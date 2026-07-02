@@ -47,7 +47,7 @@ log ""
 log "## 静的チェック"
 check "bash -n claude-container" bash -n "${SCRIPT_DIR}/claude-container"
 check "podman compose config" env \
-  CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context" CONTEXT="$SCRIPT_DIR" \
+  CLAUDE_CONTAINER_DIR="$SCRIPT_DIR" BUILD_CONTEXT_DIR="$SCRIPT_DIR/.build-context/test" CONTEXT="$SCRIPT_DIR" \
   podman compose -f "${SCRIPT_DIR}/compose.yml" config
 log ""
 
