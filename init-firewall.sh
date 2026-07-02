@@ -16,8 +16,14 @@ IFS=$'\n\t'
 ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
 CHAIN=CLAUDE_EGRESS
 
-# Flush existing rules (resolution below still works: default policies are ACCEPT
-# until the end of this script)
+# Flush existing rules. NOTE: -F only clears rules, not the -P default policy —
+# if this script already ran once (policy is DROP from a prior run), traffic is
+# blocked immediately after this flush until rules are rebuilt below. So the
+# loopback/established/DNS-resolver ACCEPT rules are installed first, before
+# anything below that needs the network (GitHub meta read is local, but the
+# domain-resolution loop does live DNS lookups). This keeps re-running this
+# script mid-session (e.g. to pick up a CDN's rotated IP) safe: worst case
+# during rebuild is DROP-with-DNS-only, never a full lockout.
 iptables -F
 iptables -X
 iptables -t nat -F
@@ -36,6 +42,26 @@ add_cidr() {
   fi
   iptables -A "$CHAIN" -d "$cidr" -j ACCEPT
 }
+
+# Loopback and established connections
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A OUTPUT -o lo -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# DNS: only to the configured resolvers (udp + tcp for large answers).
+# Installed before the domain-resolution loop below, which needs it.
+mapfile -t resolvers < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9.]+$' || true)
+if [ "${#resolvers[@]}" -eq 0 ]; then
+  echo "WARNING: no IPv4 resolver in /etc/resolv.conf, allowing DNS to any host" >&2
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+else
+  for resolver in "${resolvers[@]}"; do
+    iptables -A OUTPUT -d "$resolver" -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -d "$resolver" -p tcp --dport 53 -j ACCEPT
+  done
+fi
 
 # GitHub IP ranges (git/gh over HTTPS and SSH). No live fetch here — that would
 # consume the unauthenticated GitHub API rate limit (60 req/h per IP) on every
@@ -79,25 +105,6 @@ for domain in "${domains[@]}"; do
     add_cidr "$ip" "$domain"
   done <<<"$ips"
 done
-
-# Loopback and established connections
-iptables -A INPUT -i lo -j ACCEPT
-iptables -A OUTPUT -o lo -j ACCEPT
-iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-
-# DNS: only to the configured resolvers (udp + tcp for large answers)
-mapfile -t resolvers < <(awk '/^nameserver/ {print $2}' /etc/resolv.conf | grep -E '^[0-9.]+$' || true)
-if [ "${#resolvers[@]}" -eq 0 ]; then
-  echo "WARNING: no IPv4 resolver in /etc/resolv.conf, allowing DNS to any host" >&2
-  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
-else
-  for resolver in "${resolvers[@]}"; do
-    iptables -A OUTPUT -d "$resolver" -p udp --dport 53 -j ACCEPT
-    iptables -A OUTPUT -d "$resolver" -p tcp --dport 53 -j ACCEPT
-  done
-fi
 
 # Host network (gateway /24), for host-side services
 host_ip=$(ip route | awk '/^default/ {print $3; exit}')
