@@ -39,8 +39,10 @@
 `session-start.sh` のみ導入済み（findsummits の同名 hook を移植・簡略化）。SessionStart イベント
 （`startup|resume|clear|compact`）で実行され、以下を行う:
 
-- 最新 handover 1件・`.claude/lessons.md` 全文をセッション開始時に自動注入（従来 CLAUDE.md の文言のみに
-  依存していた「セッション開始時のルーティン」を補強）
+- 最新 handover 1件・`.claude/lessons.md` の未蒸留分（`.claude/best_practices_watermark` 以降のエントリ）
+  をセッション開始時に自動注入（従来 CLAUDE.md の文言のみに依存していた「セッション開始時のルーティン」
+  を補強）。蒸留済み分は CLAUDE.md 側の `@.claude/best_practices.md` インポートで自動注入されるため、
+  lessons.md 全文はここでは注入せず必要時に都度 Read する
 - 未解決インシデント（`.claude/incidents/`）・handover 記載のインシデントを検知し、環境確認チェックリスト
   実行を促す
 - `.claude/lessons.md` の増加件数を `.claude/best_practices_watermark` と比較し、閾値（10件）超過で

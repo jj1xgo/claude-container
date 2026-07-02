@@ -101,15 +101,13 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 一時しのぎの修正は避け、なぜそのバグが起きたかを理解した上で本質的な解決を目指す。
 
 ### セッション開始時のルーティン（必須）
-以下を順番に実行してから作業を始める：
-
-1. `.claude/handovers/` を確認し、過去1週間のファイルを古い順に読む
-2. `.claude/lessons.md` を読み、今回のタスクに関連する学びを把握する
-3. 関連するレッスンがあれば、作業開始前にユーザーに共有する
-
-作業の区切りやセッション終了時には、`/handover` の実行を促す（または手動でhandoverドキュメントを作成する）。
+グローバル CLAUDE.md の手順（注入された handover・lessons の確認、関連レッスンの共有）に従う。対象ファイルパスは `.claude/handovers/`（最新1件）・`.claude/lessons.md`（未蒸留分）で、いずれも `.claude/hooks/session-start.sh` が自動注入する。
 
 ### Best Practices（教訓蒸留）運用ルール
+
+@.claude/best_practices.md
+
+上記は `@` インポートによりセッション開始時に毎回自動でコンテキストへ読み込まれる。lessons.md は全文注入せず、`.claude/hooks/session-start.sh` が `.claude/best_practices_watermark`（前回蒸留時点の件数）以降の未蒸留分のみを自動注入する。全文が必要な場面（転記時の重複チェック等）でのみ都度 Read する。
 
 - 学びの記録先・方法は「コア原則 3. 学びを活かす」参照
 - `/update-best-practices`（グローバルコマンド、Opus 実行）が `.claude/lessons.md` を再分析し、

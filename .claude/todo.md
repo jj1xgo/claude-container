@@ -1,5 +1,20 @@
 # Todo
 
+## best_practices 蓄積・注入の仕組み整備（2026-07-02）
+
+findsummits の best_practices.md 自動注入の仕組みを移植。
+
+- [x] CLAUDE.md に `@.claude/best_practices.md` インポート行を追加
+- [x] handover の学び5件を lessons.md へ転記
+- [x] Fable に session-start.sh 改修を設計させる（lessons.md 全文注入 → watermark 以降の未蒸留分のみ注入）
+- [x] `session-start.sh` を Fable 設計案どおり改修
+- [x] CLAUDE.md の説明文を実態（未蒸留分のみ注入）に合わせて更新
+- [x] `bash -n` 構文チェック
+- [x] 実機で session-start.sh を実行し注入内容を目視確認（watermark 未作成時の全件出力・watermark>0の境界条件の両方をテスト）
+- [ ] コミット
+
+---
+
 ## Dockerfile.claude 軽量化 & bash history 修正
 
 **詳細計画**: `/workspace/.claude/mgmt/plan.md` 参照

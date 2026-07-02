@@ -53,21 +53,33 @@ else
   echo '## 最新 handover: なし'
 fi
 echo ''
-echo '## .claude/lessons.md'
-cat "$ROOT"/.claude/lessons.md 2>/dev/null
+
+# lessons.md は全文注入しない。蒸留済み分は @best_practices.md（CLAUDE.md 側で @ インポート）
+# により自動注入されるため、ここでは watermark（既蒸留件数）以降の未蒸留分のみを注入し、
+# 直近レッスンの即時共有に役割を絞る。全文が必要な場面（転記時の重複確認等）は都度 Read する。
+WATERMARK_FILE="$ROOT/.claude/best_practices_watermark"
+WATERMARK_COUNT=$(cat "$WATERMARK_FILE" 2>/dev/null || echo 0)
+echo '## .claude/lessons.md（未蒸留分のみ。全文が必要な場合は都度 Read）'
+awk -v n="$WATERMARK_COUNT" '/^- /{c++} c>n' "$ROOT"/.claude/lessons.md 2>/dev/null
 echo '<<<END AUTO-INJECTED REFERENCE>>>'
 echo ''
-echo '## handover → lessons.md 転記（自律実行）'
-echo '上記 handover の「## 学び」セクションの項目を lessons.md と突き合わせ、未転記のものは全件このセッションの最初の返答時に lessons.md へ追記すること。'
-echo '転記済みまたは該当なしの場合は一行で述べること。'
+
+# 転記指示は handover に「## 学び」の実質的な記載があるときだけ出す（該当なしで毎回出すと無駄）
+LEARNINGS=""
+if [ -n "$H" ]; then
+  LEARNINGS=$(awk '/^## 学び/{f=1; next} f && /^##/{exit} f' "$H" 2>/dev/null | grep -v '^[[:space:]]*$')
+fi
+if [ -n "$LEARNINGS" ]; then
+  echo '## handover → lessons.md 転記（自律実行）'
+  echo '上記 handover の「## 学び」セクションの項目を lessons.md と突き合わせ、未転記のものは全件このセッションの最初の返答時に lessons.md へ追記すること。転記前に必ず .claude/lessons.md を Read して重複を確認すること。'
+  echo '転記済みまたは該当なしの場合は一行で述べること。'
+fi
 
 # best_practices.md 更新チェック（lessons.md の増加件数をウォーターマークと比較）
-WATERMARK_FILE="$ROOT/.claude/best_practices_watermark"
 # grep -c はマッチ0件でも「0」を出力して exit 1 になるため || で既定値を足すと2行になる。
 # 出力をそのまま受け、ファイル不在等で空になった場合のみ既定値 0 を入れる
 CURRENT_COUNT=$(grep -c '^- ' "$ROOT"/.claude/lessons.md 2>/dev/null)
 CURRENT_COUNT=${CURRENT_COUNT:-0}
-WATERMARK_COUNT=$(cat "$WATERMARK_FILE" 2>/dev/null || echo 0)
 DELTA=$((CURRENT_COUNT - WATERMARK_COUNT))
 THRESHOLD=10
 if [ "$DELTA" -ge "$THRESHOLD" ]; then
