@@ -8,6 +8,20 @@ else
     echo "ERROR: firewall setup failed; refusing to start (set CLAUDE_CONTAINER_NO_FIREWALL=1 to opt out)" >&2
     exit 1
   fi
+  # CDN-backed allowed domains (e.g. behind CloudFront) can rotate their IPs on
+  # TTLs as short as ~13s, well within a long session. init-firewall.sh's
+  # startup resolution is a one-shot snapshot, so refresh it in the background
+  # to keep up. `&` backgrounds this in a subshell; `exec claude` below only
+  # replaces this script's own process image, so the subshell survives as its
+  # child. Output goes to /tmp (not the bind-mounted ~/.claude) since it's
+  # session-local noise, and is kept off the shared tty (compose.yml sets
+  # tty: true for claude's interactive UI) to avoid corrupting the display.
+  (
+    while true; do
+      sleep 15
+      sudo /usr/local/bin/init-firewall.sh --refresh-domains
+    done
+  ) >>/tmp/claude-firewall-refresh.log 2>&1 &
 fi
 
 for f in \
