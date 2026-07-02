@@ -15,6 +15,15 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    # IPv6 をカーネルレベルで無効化。podman のデフォルトブリッジは IPv6 グローバル
+    # ルートを持たないが、glibc getaddrinfo(AI_ADDRCONFIG) はリンクローカルアドレス
+    # (fe80::) の存在だけで「IPv6利用可能」と誤認し AAAA を優先するため、Happy
+    # Eyeballs が到達不能な IPv6 候補への接続を試みて間欠的に失敗する（2026-07 に
+    # 実障害として確認）。許可リストは A レコードのみ対象で IPv6 は元々不要なため、
+    # そもそも候補に挙げさせない。init-firewall.sh の ip6tables DROP は後段の保険。
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=1
+      - net.ipv6.conf.default.disable_ipv6=1
     #profiles:
     # Check this
     #- auth-workspace

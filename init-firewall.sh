@@ -124,7 +124,39 @@ iptables -P OUTPUT DROP
 iptables -A OUTPUT -j "$CHAIN"
 iptables -A OUTPUT -j REJECT --reject-with icmp-admin-prohibited
 
-# IPv6: drop everything except loopback (allowlist is IPv4-only)
+# IPv6 handling:
+#   1) Primary control: compose.yml's sysctls (net.ipv6.conf.*.disable_ipv6=1) should
+#      already have disabled IPv6 before this script runs, fixing a bug where glibc's
+#      getaddrinfo(AI_ADDRCONFIG) misreports IPv6 as available from a link-local-only
+#      address (no default route) and Happy Eyeballs then stalls on unreachable AAAA
+#      candidates for allowlisted CDN domains (observed 2026-07 with
+#      cyberjapandata.gsi.go.jp behind CloudFront).
+#   2) Fallback (this block): retry the same disable via /proc/sys, in case the compose
+#      sysctls setting didn't apply (e.g. older podman-compose without `sysctls:`
+#      support). Non-fatal — this is a reliability fix, not the security gate, so it
+#      deliberately breaks from this script's usual fail-closed rule.
+#   3) Security boundary (unchanged below): drop all IPv6 via ip6tables regardless of
+#      whether 1)/2) succeeded. The allowlist only resolves A records, so any
+#      surviving IPv6 path would otherwise bypass it entirely.
+disable_ipv6_fallback() {
+  local path ok=1
+  for path in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+    [ -e "$path" ] || continue
+    echo 1 > "$path" 2>/dev/null || ok=0
+  done
+  [ "$ok" -eq 1 ]
+}
+if disable_ipv6_fallback; then
+  echo "IPv6 disabled via /proc/sys (fallback check passed; compose.yml sysctls is primary)"
+else
+  echo "WARNING: could not disable IPv6 via /proc/sys/net/ipv6/conf/*/disable_ipv6 (fallback)." >&2
+  echo "WARNING: if compose.yml sysctls also failed to apply, glibc may still prefer AAAA" >&2
+  echo "WARNING: records for allowlisted CDN domains, risking intermittent Happy-Eyeballs" >&2
+  echo "WARNING: failures. The ip6tables DROP below remains the active security boundary." >&2
+fi
+
+# IPv6: drop everything except loopback (allowlist is IPv4-only; security boundary,
+# independent of whether the disable_ipv6 sysctl above took effect)
 if ip6tables -L >/dev/null 2>&1; then
   ip6tables -F
   ip6tables -X
