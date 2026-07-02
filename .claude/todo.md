@@ -98,3 +98,13 @@ findsummits の best_practices.md 自動注入の仕組みを移植。
 ### 結論
 - compose.yml は元の `~/.claude` マウントのまま運用
 - グローバル `~/.claude/` 汚染問題は許容することとして課題クローズ
+
+---
+
+## 保留
+
+findsummits側からのフィードバック対応（2026-07-02）で、ユーザー判断により今回のスコープ外とした項目。
+
+- **GitHub書き込み認証（GH_TOKEN等）の配線設計**: findsummits側からクロスプロジェクト連絡チャネル（GitHub Issues案）実現のため要望あり。現状このコンテナにはgh認証・SSH鍵・credential helperが一切配線されていない。セキュリティ上の設計判断（トークンの置き場所・スコープ・.claude-container経由でのファイル露出リスク等）が必要なため、着手前にPlan Modeでの合意が必要
+- **findsummits側 `.claude-container.d/allowed-domains.txt` へのPyPIドメイン追加**: findsummits側の設定漏れ（`pypi.org`だけでなく`files.pythonhosted.org`も必要）。claude-container側の対応ではなくfindsummits側で行う作業。README側は追記済み（利用側プロジェクトの設定節）
+- **findsummits側venv復旧**: `make venv-rebuild`実行によりvenvが空になり、上記PyPI到達不可のためローカル復旧不可能な状態（findsummits側 `.claude/incidents/2026-07-02_2226_venv-rebuild-network-blocked.md` 参照）。findsummits側の作業

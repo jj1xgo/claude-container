@@ -155,6 +155,13 @@ stage_build_context() {
     if [[ -f "$PROJECT_CONF_DIR/$file" ]]; then
       cp "$PROJECT_CONF_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
     else
+      # .claude-container.d/ 側の設定が無いプロジェクトは汎用の空フォールバックに
+      # 静かに切り替わる。かつて claude-container 本体の packages.txt に直接
+      # 書かれていたプロジェクト固有パッケージ（gcc/python3等）が、汎用化リファクタ
+      # リング（2026-07-01）後に .claude-container.d/ へ移行されないまま消失した
+      # 実障害（python3-missing インシデント、2026-07-02）があるため、フォール
+      # バック使用時は必ず気づけるよう警告を出す。
+      echo "WARNING: $PROJECT_CONF_DIR/$file not found; using claude-container's generic empty fallback ($file). If this project needs packages/domains here, create .claude-container.d/$file." >&2
       cp "$RUN_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
     fi
   done
