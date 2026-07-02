@@ -10,40 +10,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Usage
 
 ```bash
-# Run Claude in a target directory
 ./claude-container /path/to/project
-
-# Force image rebuild
-./claude-container -b /path/to/project
 ```
 
-The script can be symlinked anywhere; it resolves its own location via `readlink` to find `compose.yml` and `Dockerfile.claude`.
+Full command reference (`-b` rebuild, `--clean`, symlink support) is in README.md's "Usage" section (日本語版「使い方」).
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|---|---|---|
-| `CLAUDE_CONFIG_DIR` | `~` | Directory containing `.claude.json` and `.claude/` |
-| `EXTRA_MOUNT` | `/dev/null` | Additional host path mounted at `/data` inside the container |
-| `TZ` | Auto-detected from host | Timezone inside the container |
-| `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | Set to `1` to disable the egress allowlist firewall |
+Set via a `.claude-container` file (`KEY=VALUE` lines) at the target project root, read automatically before launch. Values are taken literally after the first `=` — no quoting, expansion, or command execution is interpreted. The file is deliberately NOT `source`d, so a malicious target project cannot run code on the host.
 
-These can be set in a `.claude-container` file at the target project root — it is read automatically before launch. Only `KEY=VALUE` lines are honored (values are taken literally after the first `=`; no quoting, expansion, or command execution — the file is deliberately NOT `source`d so a malicious target project cannot run code on the host).
+Variable list and defaults are in README.md's "Environment Variables" section (日本語版「環境変数」).
 
 ## Architecture
+
+> **前提**: 本節以降の `/home/node/` 等のパスや `sudo` コマンドは、`./claude-container` 経由で実際に起動した**コンテナ内部**の事実を説明したものである。このリポジトリのソースをコンテナを介さずホスト上で直接編集している場合、これらのパス・コマンドは実在しない（ビルド対象の仕様として読むこと）。
 
 The main files work together:
 
 - **`claude-container`** (bash) — entry point. Resolves absolute paths, reads `KEY=VALUE` lines from the target project's `.claude-container` (safe parse, no `source`), then sets `CONTEXT` and `CLAUDE_CONTAINER_DIR` and delegates to `podman compose run`. When `-b` is passed, sets `CACHEBUST` to the current epoch seconds so the install layer is always rebuilt, and runs `podman compose build` as a separate step before `run` — `run --build` would fall back to the existing stale image when the build fails (fail-open), whereas the separate build step aborts the launch on failure (fail-closed). Before building (on `-b`, or when the image doesn't exist yet), it stages `entrypoint.sh` and `init-firewall.sh` plus the target project's `.claude-container.d/packages.txt` / `requirements.txt` / `allowed-domains.txt` (falling back to claude-container's own bundled copies when the project doesn't provide them) into a fixed path, `.build-context/`, and passes it as `BUILD_CONTEXT_DIR`. A fixed path (not `mktemp -d`) is used so build caching stays stable and no cleanup trap is needed. `stage_build_context()` also fetches the GitHub meta snapshot here (see "GitHub meta スナップショット" below).
-- **`compose.yml`** — defines the single service `claude-auth-workspace`. `build.context` is `${BUILD_CONTEXT_DIR}` (the staged directory above); `build.dockerfile` is `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` — Dockerfiles can live outside the build context, so `Dockerfile.claude` itself is read directly from the claude-container repo without staging. Mounts the host's `~/.claude.json` and `~/.claude/` (auth + config) plus the target workspace at `/workspace`. Uses `userns_mode: keep-id` so files inside the container have the same UID as the host user. Adds `NET_ADMIN`/`NET_RAW` capabilities so `init-firewall.sh` can install iptables rules inside the container's network namespace. Passes `CACHEBUST` as a build arg to enable cache-busting on `-b`. Sets `net.ipv6.conf.{all,default}.disable_ipv6=1` via `sysctls` — podman's default bridge network has no IPv6 global route (link-local `fe80::` only), but glibc's `getaddrinfo(AI_ADDRCONFIG)` still reports IPv6 as available and returns AAAA records, so curl/requests' Happy Eyeballs intermittently stalls trying unreachable IPv6 candidates for allowlisted CDN-backed domains. This is the primary fix; `init-firewall.sh`'s `ip6tables` DROP (below) remains the security boundary regardless.
+- **`compose.yml`** — defines the single service `claude-auth-workspace`. `build.context` is `${BUILD_CONTEXT_DIR}` (the staged directory above); `build.dockerfile` is `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` — Dockerfiles can live outside the build context, so `Dockerfile.claude` itself is read directly from the claude-container repo without staging. Mounts the host's `~/.claude.json` and `~/.claude/` (auth + config), the target workspace at `/workspace`, and `/etc/localtime` (read-only, for host timezone). Uses `userns_mode: keep-id` so files inside the container have the same UID as the host user. Adds `NET_ADMIN`/`NET_RAW` capabilities so `init-firewall.sh` can install iptables rules inside the container's network namespace. Passes `CACHEBUST` as a build arg to enable cache-busting on `-b`. Sets `net.ipv6.conf.{all,default}.disable_ipv6=1` via `sysctls` — podman's default bridge network has no IPv6 global route (link-local `fe80::` only), but glibc's `getaddrinfo(AI_ADDRCONFIG)` still reports IPv6 as available and returns AAAA records, so curl/requests' Happy Eyeballs intermittently stalls trying unreachable IPv6 candidates for allowlisted CDN-backed domains. This is the primary fix; `init-firewall.sh`'s `ip6tables` DROP (below) remains the security boundary regardless.
 - **`Dockerfile.claude`** — builds on `debian:stable` (currently trixie), installs Claude Code dependencies and the staged `packages.txt`/`requirements.txt` (see above), then installs Claude Code via the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`). It also `COPY`s the `github-meta.json` staged by `claude-container` and validates it with `jq` — no network call happens in this layer, so Docker's content-hash caching handles it naturally (see "GitHub meta スナップショット" below). An `ARG CACHEBUST` is declared immediately before the install `RUN`, ensuring the install layer (and everything below it) is never served from cache when `-b` is used. Runs as the non-root `node` user (UID 1000, created explicitly) with `CMD ["/home/node/entrypoint.sh"]` (which applies the firewall, then execs `claude --dangerously-skip-permissions`). `debian:stable` を採用した理由: native installer の Claude Code バイナリは glibc のみ依存で Node.js を実行時に必要とせず、Node.js 同梱の `node:24` より軽量な Debian ベースで足りるため。注意: `ca-certificates` は debian:stable にも**同梱されていない**ため、HTTP で先行インストールしてから apt sources を HTTPS に書き換える（Dockerfile 冒頭が2段構成なのはこのため。削除しないこと）。
-- **`entrypoint.sh`** — コンテナ起動時に実行されるシェルスクリプト。まず `sudo /usr/local/bin/init-firewall.sh` でエグレス制限を適用し（失敗時は起動中断＝fail-closed。`CLAUDE_CONTAINER_NO_FIREWALL=1` で警告表示の上スキップ）、次に `~/.claude/plugins/` 内の設定ファイルに残存するホスト側ユーザーのパス（例: `/home/tsu/.claude`）をコンテナ内パス（`/home/node/.claude`）に自動修正してから `claude --dangerously-skip-permissions` を起動する。ホスト側とコンテナ内でユーザー名が異なる環境でのプラグインパス不整合を吸収するための仕組み。
-- **`init-firewall.sh`** — deny-by-default のエグレス許可リスト。Anthropic 公式 devcontainer の同名スクリプトの移植で、iptables で Claude Code に必要なエンドポイント（api.anthropic.com・GitHub IP レンジ等）と `/etc/claude-container/allowed-domains.txt`（ビルド時焼き込み）のドメインのみ許可する。公式との差分: ipset 不使用（rootless podman ではホストの `ip_set` カーネルモジュールを autoload できないため素の iptables ルールで代替）、DNS は `/etc/resolv.conf` のリゾルバ宛のみ、IPv6 は全遮断（許可リストが A レコードのみのため、IPv6 経由のバイパスを防ぐ）。root 所有で node ユーザーは sudoers 定義（`/etc/sudoers.d/node-firewall`）によりこのスクリプトの実行のみ可能 — 実行時にコンテナ内のコードが許可リストを改変できない。GitHub IP レンジは起動時にライブ取得せず、ビルド時に焼き込まれたスナップショット（`/etc/claude-container/github-meta.json`）を読み込むだけ（詳細は下記「GitHub meta スナップショット」参照）。設定完了後に example.com 到達不可・api.github.com / api.anthropic.com 到達可を自己検証する。GitHub 到達確認は API クォータを消費しない TCP 接続確認（`/dev/tcp`）で行う。IPv6 無効化は `compose.yml` の `sysctls` が主対策だが、それが効かない環境向けにこのスクリプト自身も `/proc/sys/net/ipv6/conf/*/disable_ipv6` への書き込みをフォールバックとして試みる（失敗しても警告のみで起動は継続——このスクリプトの他部分の fail-closed 原則に対する意図的な例外）。いずれの結果でも後段の `ip6tables` DROP は変わらず適用される。
+- **`entrypoint.sh`** — コンテナ起動時に実行されるシェルスクリプト。まず `sudo /usr/local/bin/init-firewall.sh` でエグレス制限を適用し（失敗時は起動中断＝fail-closed。`CLAUDE_CONTAINER_NO_FIREWALL=1` で警告表示の上スキップ）、次にバックグラウンドで `sudo init-firewall.sh --refresh-domains` を15秒間隔で回すループを `&` で起動する（CDNの短いTTLによるIPローテーション追従。詳細は下記「CDN IP ローテーション追従」参照）。ループの出力は対話TUIの端末（`compose.yml` の `tty: true`）を汚さないよう `/tmp/claude-firewall-refresh.log` へリダイレクトする。`exec claude --dangerously-skip-permissions` はこのシェル自身のプロセスイメージを置き換えるだけなので、`&` で先にフォークしたループはそのまま子プロセスとして生き続ける。`CLAUDE_CONTAINER_NO_FIREWALL=1` 時はこのループも起動しない。最後に `~/.claude/plugins/` 内の設定ファイルに残存するホスト側ユーザーのパス（例: `/home/tsu/.claude`）をコンテナ内パス（`/home/node/.claude`）に自動修正する。ホスト側とコンテナ内でユーザー名が異なる環境でのプラグインパス不整合を吸収するための仕組み。
+- **`init-firewall.sh`** — deny-by-default のエグレス許可リスト。Anthropic 公式 devcontainer の同名スクリプトの移植で、iptables で Claude Code に必要なエンドポイント（api.anthropic.com・GitHub IP レンジ等）と `/etc/claude-container/allowed-domains.txt`（ビルド時焼き込み）のドメインのみ許可する。公式との差分: ipset 不使用（rootless podman ではホストの `ip_set` カーネルモジュールを autoload できないため素の iptables ルールで代替）、DNS は `/etc/resolv.conf` のリゾルバ宛のみ、IPv6 は全遮断（許可リストが A レコードのみのため、IPv6 経由のバイパスを防ぐ）。root 所有で node ユーザーは sudoers 定義（`/etc/sudoers.d/node-firewall`）によりこのスクリプトの実行のみ可能 — 実行時にコンテナ内のコードが許可リストを改変できない（sudoers は引数を制限していないため `--refresh-domains` 呼び出しも同じ許可でカバーされる）。GitHub IP レンジは起動時にライブ取得せず、ビルド時に焼き込まれたスナップショット（`/etc/claude-container/github-meta.json`）を読み込むだけ（詳細は下記「GitHub meta スナップショット」参照）。設定完了後に example.com 到達不可・api.github.com / api.anthropic.com 到達可を自己検証する。GitHub 到達確認は API クォータを消費しない TCP 接続確認（`/dev/tcp`）で行う。IPv6 無効化は `compose.yml` の `sysctls` が主対策だが、それが効かない環境向けにこのスクリプト自身も `/proc/sys/net/ipv6/conf/*/disable_ipv6` への書き込みをフォールバックとして試みる（失敗しても警告のみで起動は継続——このスクリプトの他部分の fail-closed 原則に対する意図的な例外）。いずれの結果でも後段の `ip6tables` DROP は変わらず適用される。許可ドメインのIPローテーションには `--refresh-domains` モードで追従する（詳細は下記「CDN IP ローテーション追従」参照）。
 - **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container's bundled default apt/pip package lists and extra allowed-domain list (fallback values, kept empty). One entry per line; lines starting with `#` are comments. `requirements.txt` is passed to `pip3 install -r`, but the install step is skipped entirely when the file has no real entries — pip3 is not in the base image, so projects that use `requirements.txt` must add `python3-pip` to their `packages.txt` (the Dockerfile fails with an explicit error otherwise). Lines starting with `-` in `packages.txt` are filtered out at install time so apt options cannot be injected. Project-specific entries belong in the target project's `.claude-container.d/`, not here — claude-container itself must stay project-agnostic.
 
 ### GitHub meta スナップショット
 
 `init-firewall.sh` の許可リストが使う GitHub IP レンジは `https://api.github.com/meta` から取得する。未認証 GitHub API のレート制限（60 req/h/IP）を避けるため、取得は `claude-container` の `stage_build_context()` 内の1箇所でのみ行う（`-b` のたび最大1リクエスト）。取得結果は `.build-context/github-meta.json` に書き込まれ、`Dockerfile.claude` がそれを `COPY` してイメージへ焼き込む（ネットワーク呼び出しを伴わないので通常の content-hash キャッシュが効く）。取得に失敗した場合は、`.build-context/`（`--clean` まで永続する固定パス）に残っている前回分を警告付きで再利用し、それも無い場合（初回ステージングでいきなり枯渇している等）のみビルドを中断する。`init-firewall.sh` は起動のたびにこのイメージ内スナップショットを読み込むだけで、ランタイムでのライブ取得は行わない — GitHub の IP レンジは変更頻度が低いため、`-b` のたびに更新される多少古いコピーでも実用に足りる。
+
+### CDN IP ローテーション追従
+
+`allowed-domains.txt` 等で許可した CDN 配下のドメイン（例: CloudFront）は DNS の TTL が短く（実測 13〜60秒）、A レコードのセットがセッション中に丸ごと切り替わることがある。`init-firewall.sh` は起動時にドメインを1回解決して個別 IP を `/32` で許可するため、そのままではローテーション後に新規接続が失敗し続ける（2026-07 に実障害として確認）。
+
+対策として、許可ドメインごとの ACCEPT ルールには `-m comment --comment "domain=<domain>;gen=<epoch>"` で世代タグを付与する（GitHub CIDR・ホストネットワークルールにはタグを付けない — 短TTLローテーションと無関係なため）。`entrypoint.sh` が起動するバックグラウンドループから15秒間隔で `init-firewall.sh --refresh-domains` を呼び、チェーンをフラッシュせずに新しい IP を差分追加し、`GRACE_WINDOW_SECONDS`（180秒）を超えて再出現しない IP を個別削除する（実装の詳細手順はスクリプト内コメント参照）。個別ドメインの解決失敗はコンテナを落とさず次サイクルへ持ち越す fail-open 設計（起動時のフル初期化は従来どおり fail-closed のまま）。
 
 ### Project-specific packages (`.claude-container.d/`)
 
@@ -53,23 +52,11 @@ The image name is fixed as `localhost/claude-container_claude-auth-workspace` (C
 
 ## Modifying the Image
 
-Edit `Dockerfile.claude` and rebuild with `./claude-container -b /path/to/project`. The `-b` flag makes `stage_build_context()` re-fetch `github-meta.json` (see "GitHub meta スナップショット" above) and passes a `CACHEBUST` build arg (current epoch seconds) that busts the cache from the install layer down, so `install.sh` always re-executes to fetch the latest Claude Code. The heavy apt/pip layers above stay cached, keeping rebuilds fast. Pin the Claude Code version by setting `CLAUDE_CODE_VERSION` (e.g. `CLAUDE_CODE_VERSION=2.1.119` in the target project's `.claude-container`); it defaults to `latest` and is wired through `build.args` in `compose.yml`.
-
-`.build-context/` is a generated build context under the claude-container repo (git-ignored). It's removed by `./claude-container --clean`.
+Rebuild procedure, `CACHEBUST`/`CLAUDE_CODE_VERSION` handling, `DISABLE_AUTOUPDATER`, and `.build-context/` cleanup are covered in README.md's "Modifying the Image" section (日本語版「イメージの変更」). Implementation pointer: the GitHub meta re-fetch happens inside `claude-container`'s `stage_build_context()` (see "GitHub meta スナップショット" above).
 
 ## Persistence Across Container Runs
 
-コンテナは `--rm` で起動するため終了時に内部の状態は消えるが、以下はホストに bind mount されているため**コンテナを再起動しても保持される**：
-
-| コンテナ内パス | ホスト側 | 内容 |
-|---|---|---|
-| `/home/node/.claude/` | `~/.claude/` | Claude のメモリ・設定・セッション履歴 |
-| `/home/node/.claude.json` | `~/.claude.json` | Claude の認証情報 |
-| `/workspace/` | 起動時に指定したディレクトリ | 作業対象プロジェクト |
-
-bash history は `/workspace/.claude/bash_history` に保存される（上表の `/workspace/` マウントにより保持）。
-
-> **利用者向け注意**: ターゲットプロジェクトのリポジトリで `.claude/bash_history` を誤ってコミットしないよう、`.gitignore` に `.claude/bash_history` を追加することを推奨する。
+コンテナ再起動をまたいで保持される bind mount の一覧は README.md の「コンテナ間の永続化」（英語版 "Persistence Across Container Runs"）節を参照。bash_history の `.gitignore` 推奨設定は README.md の「利用側プロジェクトの設定」（英語版 "Target Project Configuration"）節にある。
 
 ## Security Model
 
@@ -81,25 +68,16 @@ Claude runs with `--dangerously-skip-permissions` inside the container, meaning 
 
 - DNS トンネリング: リゾルバ宛 53 番は許可されるため、DNS クエリに載せた exfiltration は原理上可能
 - 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる
-- IP ローテーション: 許可リストは起動時に解決した IP ベースのため、CDN の IP 変更で長時間セッション中に到達不能になることがある（コンテナ再起動で再解決）。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
+- IP ローテーション: 許可ドメインの IP は約15秒間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
 - ビルド時ネットワークは無制限: `pip3 install` は setup.py / build backend の任意コードをビルド時に実行しうる。ただし build context に秘密情報は含まれず、イメージへ焼き込まれた悪性コードの実行時通信は上記 firewall が封じる
 
 ## Podman-specific Notes
 
-- `userns_mode: keep-id` maps the host user's UID/GID into the container. This is a Podman feature and has no Docker equivalent — remove it if adapting for Docker.
-- `--in-pod false` prevents Podman Compose from wrapping the service in a Pod (the default Podman Compose behavior). Docker Compose ignores this flag.
+Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移植時の注意点は README.md の "Podman-specific Notes" 節（日本語版「Podman 固有の注意」）を参照。
 
 ## Verifying Changes
 
-There is no test suite. After editing the script or Compose/Dockerfile, verify with:
-
-```bash
-# Syntax check the shell scripts (use shellcheck too if available)
-bash -n claude-container entrypoint.sh init-firewall.sh
-
-# Validate Compose file
-podman compose -f compose.yml config
-```
+テストスイートはない。確認コマンド（`bash -n` の対象・`podman compose config`）は README.md の "Verifying Changes" 節（日本語版「変更後の確認」）を参照。**新しいシェルスクリプトを追加/削除したときは、`bash -n` の対象ファイルリストを README.md と CLAUDE.md の両方で揃えること**（過去に両者がズレていたことがある）。
 
 ---
 
@@ -164,6 +142,3 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 
 ### ルールと制約
 - **Git**：Conventional Commits形式を使用。本文は日本語で記述（例: `feat: ユーザー認証にOAuth2を追加`）。確認なしに自動コミット・自動pushはしない。
-
-### 開発環境
-@CLAUDE_ENV.md
