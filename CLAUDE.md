@@ -131,6 +131,17 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 
 作業の区切りやセッション終了時には、`/handover` の実行を促す（または手動でhandoverドキュメントを作成する）。
 
+### Best Practices（教訓蒸留）運用ルール
+
+- 学びの記録先・方法は「コア原則 3. 学びを活かす」参照
+- `/update-best-practices`（グローバルコマンド、Opus 実行）が `.claude/lessons.md` を再分析し、
+  `.claude/best_practices.md`（git 管理対象）を再合成する
+  - 蒸留観点: ビルド/キャッシュ運用、コンテナ・セキュリティ境界の設計判断、fail-open/fail-closed の選択基準、ドキュメント整合性、実機検証の徹底
+  - 原則数目安: 8〜12件（規模に見合った少なめ設定。増えすぎたら統合する）
+  - 除外: プロジェクト固有の技術詳細（特定パッケージ名・特定コマンドの出力形式等）は原則に含めない
+  - 実行後、`.claude/best_practices.md` と `.claude/best_practices_watermark` はコマンド内でコミットまで完結する
+- lessons.md が一定量増えるとセッション開始時に実行が自動的に推奨される（`.claude/hooks/session-start.sh` が検知）
+
 ### タスク管理の流れ
 上記ルーティンで把握した情報をもとに、以下の順で進める。
 

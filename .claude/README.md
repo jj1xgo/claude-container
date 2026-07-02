@@ -12,36 +12,61 @@
 | 要素 | グローバル `~/.claude/` | このプロジェクト `.claude/` |
 |---|---|---|
 | [**CLAUDE.md**](#claudemd-の位置) | 全プロジェクト共通ガイドライン | リポジトリルートに配置 |
-| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` のみ |
-| **settings.local.json** | 存在しない | 存在しない（プロジェクト固有 permissions・hooks 未定義） |
+| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + SessionStart hook 登録 |
+| **settings.local.json** | 存在しない | 存在しない（プロジェクト固有 permissions 未定義） |
 | **commands/** | 汎用 skill（handover / log-incident / claude-md-panel / update-best-practices） | 存在しない（ドメイン固有 skill なし） |
 | **rules/** | 存在しない | 存在しない |
-| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | 存在しない（PreToolUse/PostToolUse hook 未定義） |
+| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨） |
 | [**incidents/**](#incidents) | 存在しない | 存在しない（発生時に運用開始。手順は `/log-incident` 参照） |
 | [**handovers/**](#handovers) | 存在しない | セッション引き継ぎノート（このプロジェクト配下・git 管理外） |
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
+| [**best_practices.md**](#best_practicesmdbest_practices_watermark) | 存在しない | `/update-best-practices` が lessons.md から再合成する原則集（`.claude/` 直下・git 管理対象） |
 | [**plan-\*.md・todo.md**](#plan-mdtodomd) | 存在しない | plan承認後の運用ファイル（`.claude/` 直下・git 管理対象） |
 
 ---
 
 ## プロジェクト要素インベントリ
 
-### commands/・rules/・hooks/
+### commands/・rules/
 
-いずれも未作成。findsummits にある `spec-panel` のようなドメイン固有 skill、`architecture.md` のようなアーキテクチャルール、
-SessionStart/PreToolUse/PostToolUse hook は、本プロジェクトでは現時点で導入していない。
+いずれも未作成。findsummits にある `spec-panel` のようなドメイン固有 skill、`architecture.md` のような
+アーキテクチャルールは、本プロジェクトでは現時点で導入していない。
 必要になった時点で追加する（このプロジェクトはツール自体のリポジトリであり、findsummits のような
 ドメイン固有の仕様レビューや lint 対象コードを持たないため）。
+
+### hooks/
+
+`session-start.sh` のみ導入済み（findsummits の同名 hook を移植・簡略化）。SessionStart イベント
+（`startup|resume|clear|compact`）で実行され、以下を行う:
+
+- 最新 handover 1件・`.claude/lessons.md` 全文をセッション開始時に自動注入（従来 CLAUDE.md の文言のみに
+  依存していた「セッション開始時のルーティン」を補強）
+- 未解決インシデント（`.claude/incidents/`）・handover 記載のインシデントを検知し、環境確認チェックリスト
+  実行を促す
+- `.claude/lessons.md` の増加件数を `.claude/best_practices_watermark` と比較し、閾値（10件）超過で
+  `/update-best-practices` の実行を推奨
+
+PreToolUse/PostToolUse hook は未定義。
 
 ### settings.json
 
 ```json
 {
-  "skipDangerousModePermissionPrompt": true
+  "skipDangerousModePermissionPrompt": true,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh\"" }
+        ]
+      }
+    ]
+  }
 }
 ```
 
-permissions.allow・hooks は未定義。
+permissions.allow は未定義。
 
 ### incidents/
 
@@ -56,6 +81,13 @@ permissions.allow・hooks は未定義。
 ### lessons.md
 
 修正・フィードバックの学びを記録するファイル。`.gitignore` 対象（git 管理外・コミット不要）。
+
+### best_practices.md・best_practices_watermark
+
+`/update-best-practices`（グローバル skill、Opus 実行）が `lessons.md` を再分析して合成する高レベル原則集。
+運用定義はリポジトリルート [CLAUDE.md](../CLAUDE.md)「Best Practices（教訓蒸留）運用ルール」節を参照。
+`best_practices_watermark` は前回合成時点の lessons.md 件数を記録し、`hooks/session-start.sh` が増加量の
+閾値判定に使う。いずれも git 管理対象（`lessons.md` と異なり除外しない）。
 
 ### plan-\*.md・todo.md
 
