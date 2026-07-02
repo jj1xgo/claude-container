@@ -62,18 +62,12 @@ RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
-# Cache-bust marker: value changes on every `-b` run so layers from here down
-# are never reused from cache (fresh GitHub meta snapshot + latest Claude Code).
-ARG CACHEBUST=unknown
-
-# Snapshot GitHub IP ranges at build time. init-firewall.sh falls back to this
-# when the live api.github.com/meta fetch fails at container start (e.g. the
-# unauthenticated rate limit of 60 req/h per IP). Root-owned like the other
-# firewall assets so it cannot be altered at runtime.
-RUN echo "cachebust=${CACHEBUST}" \
-  && { curl -fsS https://api.github.com/meta -o /etc/claude-container/github-meta.json \
-       && jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null; } \
-  || { echo "ERROR: failed to fetch GitHub meta for the firewall fallback (rate limit? retry after it resets)" >&2; exit 1; }
+# GitHub meta snapshot, fetched by claude-container's stage_build_context() into the
+# build context (not fetched here, so this step never touches the unauthenticated
+# GitHub API rate limit itself). init-firewall.sh reads only this snapshot at runtime
+# — it no longer does a live fetch. Root-owned like the other firewall assets.
+COPY github-meta.json /etc/claude-container/github-meta.json
+RUN jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null
 
 WORKDIR /workspace
 USER node
@@ -84,6 +78,10 @@ RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> 
 
 COPY --chown=node:node entrypoint.sh /home/node/entrypoint.sh
 RUN chmod +x /home/node/entrypoint.sh
+
+# Cache-bust marker: value changes on every `-b` run so this layer (and below)
+# is never reused from cache, guaranteeing the latest Claude Code is fetched.
+ARG CACHEBUST=unknown
 
 # Install Claude Code via official native installer (Recommended method)
 # Installs to ~/.local/bin/claude (symlink) and ~/.local/share/claude (binary)

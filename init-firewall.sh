@@ -37,22 +37,17 @@ add_cidr() {
   iptables -A "$CHAIN" -d "$cidr" -j ACCEPT
 }
 
-# GitHub IP ranges (git/gh over HTTPS and SSH). The live fetch counts against
-# the unauthenticated GitHub API rate limit (60 req/h per IP), so when it fails
-# fall back to the snapshot baked into the image at build time — the ranges
-# change rarely enough for a stale copy to stay usable.
+# GitHub IP ranges (git/gh over HTTPS and SSH). No live fetch here — that would
+# consume the unauthenticated GitHub API rate limit (60 req/h per IP) on every
+# container start. Instead this reads the snapshot claude-container's
+# stage_build_context() fetched once and baked into the image at build time —
+# the ranges change rarely enough for a stale copy to stay usable.
 GH_META_SNAPSHOT=/etc/claude-container/github-meta.json
-echo "Fetching GitHub IP ranges..."
-if gh_ranges=$(curl -fsS https://api.github.com/meta) \
-   && echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-  echo "Using live GitHub meta"
-else
-  echo "WARNING: live GitHub meta fetch failed (rate limit?); using build-time snapshot" >&2
-  gh_ranges=$(cat "$GH_META_SNAPSHOT" 2>/dev/null || true)
-  if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
-    echo "ERROR: GitHub meta snapshot at $GH_META_SNAPSHOT is missing or invalid" >&2
-    exit 1
-  fi
+echo "Loading GitHub IP ranges from build-time snapshot..."
+gh_ranges=$(cat "$GH_META_SNAPSHOT" 2>/dev/null || true)
+if ! echo "$gh_ranges" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+  echo "ERROR: GitHub meta snapshot at $GH_META_SNAPSHOT is missing or invalid" >&2
+  exit 1
 fi
 while read -r cidr; do
   add_cidr "$cidr" "GitHub meta"

@@ -103,6 +103,21 @@ stage_build_context() {
       cp "$RUN_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
     fi
   done
+
+  # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
+  # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
+  # ここ1箇所のみ（起動時にはライブ取得しない）。失敗時は前回ステージング分（.build-context/
+  # は --clean まで永続する）を警告付きで再利用し、それも無ければビルドを止める。
+  local gh_meta
+  if gh_meta=$(curl -fsS https://api.github.com/meta) \
+     && echo "$gh_meta" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+    echo "$gh_meta" > "$BUILD_CONTEXT_DIR/github-meta.json"
+  elif [[ -f "$BUILD_CONTEXT_DIR/github-meta.json" ]]; then
+    echo "WARNING: live GitHub meta fetch failed (rate limit?); reusing previously staged snapshot" >&2
+  else
+    echo "ERROR: failed to fetch GitHub meta and no previous snapshot exists (rate limit? retry after it resets)" >&2
+    exit 1
+  fi
 }
 
 # compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
