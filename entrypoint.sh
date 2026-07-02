@@ -16,6 +16,9 @@ else
   # child. Output goes to /tmp (not the bind-mounted ~/.claude) since it's
   # session-local noise, and is kept off the shared tty (compose.yml sets
   # tty: true for claude's interactive UI) to avoid corrupting the display.
+  # (The container's actual PID1 is tini, set via Dockerfile.claude's
+  # ENTRYPOINT — this script and the claude process it execs into both run as
+  # tini's child, so signals podman forwards on exit land on a live process.)
   (
     while true; do
       sleep 15

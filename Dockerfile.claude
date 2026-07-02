@@ -18,10 +18,20 @@ RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
 
 # Install Claude Code dependencies (curl/jq for native installer; rest is dev convenience)
 # iptables/bind9-dnsutils/iproute2/sudo are for init-firewall.sh (egress allowlist)
+# tini becomes PID1 (see ENTRYPOINT below): reaps children and keeps PID1
+# signalable. With claude itself as PID1 (via exec in entrypoint.sh), children
+# reparented to PID1 (e.g. the firewall refresh loop's sudo helpers, one per
+# cycle) were never reaped and piled up as zombies, and when the workload
+# wedged on exit (2026-07-02: a host kernel workqueue Oops left an unkillable
+# D-state thread), the zombie PID1 could not be signalled at all — podman
+# showed `crun kill ... failed` / "No such process" and the container stuck
+# in "Stopping". tini cannot fix a kernel-side wedge, but keeps reaping and
+# `podman stop` working. Kept here rather than in packages.txt so a project's
+# own packages.txt can't silently drop it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git gh jq fzf unzip procps tzdata \
-      iptables bind9-dnsutils iproute2 sudo && \
+      iptables bind9-dnsutils iproute2 sudo tini && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install project-specific apt packages
@@ -92,4 +102,6 @@ RUN echo "cachebust=${CACHEBUST}" \
 # Add ~/.local/bin to PATH (where native installer places the symlink)
 ENV PATH=/home/node/.local/bin:$PATH
 
+# tini is PID1; entrypoint.sh (and the claude process it execs into) runs as its child.
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/home/node/entrypoint.sh"]
