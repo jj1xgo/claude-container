@@ -7,15 +7,21 @@ services:
       args:
         TZ: ${TZ:-UTC}
         CACHEBUST: ${CACHEBUST:-unknown}
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
     stdin_open: true
     tty: true
     userns_mode: keep-id
+    # init-firewall.sh がコンテナ内 netns に iptables ルールを引くのに必要
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     #profiles:
     # Check this
     #- auth-workspace
     environment:
       TZ: ${TZ:-UTC}
       DISABLE_AUTOUPDATER: "1"
+      CLAUDE_CONTAINER_NO_FIREWALL: ${CLAUDE_CONTAINER_NO_FIREWALL:-}
     volumes:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude.json:/home/node/.claude.json
       - ${CLAUDE_CONFIG_DIR:-~}/.claude:/home/node/.claude

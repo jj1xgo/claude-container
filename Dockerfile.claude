@@ -17,21 +17,32 @@ RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
     xargs sed -i 's|http://deb\.debian\.org|https://deb.debian.org|g'
 
 # Install Claude Code dependencies (curl/jq for native installer; rest is dev convenience)
+# iptables/bind9-dnsutils/iproute2/sudo are for init-firewall.sh (egress allowlist)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      curl git gh jq fzf unzip procps tzdata && \
+      curl git gh jq fzf unzip procps tzdata \
+      iptables bind9-dnsutils iproute2 sudo && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install project-specific apt packages
+# Lines starting with "-" are excluded so packages.txt cannot inject apt options
 COPY packages.txt /tmp/packages.txt
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      $(grep -v '^\s*#\|^\s*$' /tmp/packages.txt | tr '\n' ' ') && \
+      $(grep -Ev '^\s*(#|-|$)' /tmp/packages.txt | tr '\n' ' ') && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages
+# Install Python packages (skipped when requirements.txt has no entries).
+# pip3 is not in the base image — projects using requirements.txt must add
+# python3-pip to their packages.txt.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip3 install -r /tmp/requirements.txt --break-system-packages
+RUN if grep -qE '^[[:space:]]*[^#[:space:]]' /tmp/requirements.txt; then \
+      command -v pip3 >/dev/null || { \
+        echo "ERROR: requirements.txt has entries but pip3 is not installed." >&2; \
+        echo "Add python3-pip to .claude-container.d/packages.txt." >&2; \
+        exit 1; }; \
+      pip3 install -r /tmp/requirements.txt --break-system-packages; \
+    fi
 
 ENV DEVCONTAINER=true
 
@@ -42,6 +53,14 @@ RUN groupadd --gid 1000 node \
 # Create workspace and config directories
 RUN mkdir -p /workspace /home/node/.claude && \
   chown -R node:node /workspace /home/node/.claude
+
+# Egress firewall assets: root-owned so the node user cannot alter the allowlist
+# or the script at runtime. node may only run this exact script via sudo.
+COPY init-firewall.sh /usr/local/bin/init-firewall.sh
+COPY allowed-domains.txt /etc/claude-container/allowed-domains.txt
+RUN chmod 755 /usr/local/bin/init-firewall.sh && \
+  echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
+  chmod 0440 /etc/sudoers.d/node-firewall
 
 WORKDIR /workspace
 USER node

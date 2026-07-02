@@ -69,11 +69,15 @@ echo "RUN DIR: $RUN_DIR"
 WORKING_DIR=$( cd "$1" > /dev/null && pwd )
 cd "$WORKING_DIR" || exit 1
 
-# プロジェクトの .claude-container ファイルがあれば読み込む
+# プロジェクトの .claude-container ファイルがあれば KEY=VALUE 行のみ環境変数として取り込む。
+# source だと利用側プロジェクトのファイルがホスト上で任意コード実行できてしまうため、
+# 変数代入以外の行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
 if [[ -f "$WORKING_DIR/.claude-container" ]]; then
-  set -a
-  source "$WORKING_DIR/.claude-container"
-  set +a
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
+    export "$line"
+  done < "$WORKING_DIR/.claude-container"
 fi
 
 # プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
@@ -82,24 +86,23 @@ PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
 # ビルドキャッシュを安定させ、trap によるクリーンアップも不要にする。
 BUILD_CONTEXT_DIR="$RUN_DIR/.build-context"
 
-# entrypoint.sh / packages.txt / requirements.txt をビルドコンテキストへ集約する。
-# packages.txt・requirements.txt はプロジェクト側の .claude-container.d/ にあればそちらを、
+# entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
+# ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
+# プロジェクト側の .claude-container.d/ にあればそちらを、
 # なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
 stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
   cp "$RUN_DIR/entrypoint.sh" "$BUILD_CONTEXT_DIR/entrypoint.sh"
+  cp "$RUN_DIR/init-firewall.sh" "$BUILD_CONTEXT_DIR/init-firewall.sh"
 
-  if [[ -f "$PROJECT_CONF_DIR/packages.txt" ]]; then
-    cp "$PROJECT_CONF_DIR/packages.txt" "$BUILD_CONTEXT_DIR/packages.txt"
-  else
-    cp "$RUN_DIR/packages.txt" "$BUILD_CONTEXT_DIR/packages.txt"
-  fi
-
-  if [[ -f "$PROJECT_CONF_DIR/requirements.txt" ]]; then
-    cp "$PROJECT_CONF_DIR/requirements.txt" "$BUILD_CONTEXT_DIR/requirements.txt"
-  else
-    cp "$RUN_DIR/requirements.txt" "$BUILD_CONTEXT_DIR/requirements.txt"
-  fi
+  local file
+  for file in packages.txt requirements.txt allowed-domains.txt; do
+    if [[ -f "$PROJECT_CONF_DIR/$file" ]]; then
+      cp "$PROJECT_CONF_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
+    else
+      cp "$RUN_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
+    fi
+  done
 }
 
 # compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
@@ -123,12 +126,15 @@ if [[ -z "${TZ:-}" ]]; then
   export TZ
 fi
 
+# -b のビルドは run と分離して実行する。`run --build` はビルド失敗時に
+# 既存の古いイメージでそのまま起動してしまう（fail-open）ため、
+# build を独立させ set -e で失敗時に起動へ進まないようにする（fail-closed）。
 if [[ $BUILD -eq 1 ]]; then
   CACHEBUST="$(date +%s)" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
     BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm --build claude-auth-workspace
-else
-  CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
-    podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
+    podman compose -f "$RUN_DIR/compose.yml" --in-pod false build claude-auth-workspace
 fi
+
+CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+  BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
+  podman compose -f "$RUN_DIR/compose.yml" --in-pod false run --rm claude-auth-workspace
