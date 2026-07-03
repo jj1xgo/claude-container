@@ -141,6 +141,31 @@ if [[ -f "$WORKING_DIR/.claude-container" ]]; then
   done < "$WORKING_DIR/.claude-container"
 fi
 
+# .claude-container に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
+# 渡さない設計（トークンを podman inspect に露出させないため）。直書きに気づかず
+# 「動かない」で詰まるのを防ぐ誤用ガード。
+if [[ -f "$WORKING_DIR/.claude-container" ]] && grep -qE '^GH_TOKEN=' "$WORKING_DIR/.claude-container"; then
+  echo "WARNING: .claude-container の GH_TOKEN=... はコンテナに渡されません。GH_TOKEN_FILE=<トークンを保存したファイルへの絶対パス> を使ってください。" >&2
+fi
+
+# GitHub Issues 書き込み用トークンのファイル参照（GH_TOKEN_FILE）。トークン本体は
+# ビルドコンテキストにもコミット対象の .claude-container にも置かず、ホスト上の
+# 独立したファイルに置く運用を前提とする。ファイルが無ければ起動を中止する
+# （fail-closed。他の設定ミスと違い、意図した保護が効かないまま起動させないため）。
+if [[ -n "${GH_TOKEN_FILE:-}" ]]; then
+  # .claude-container のパーサーはシェル展開を解釈しないため、先頭の ~/ を自前で正規化する。
+  GH_TOKEN_FILE="${GH_TOKEN_FILE/#\~\//$HOME/}"
+  export GH_TOKEN_FILE
+  if [[ ! -f "$GH_TOKEN_FILE" ]]; then
+    echo "ERROR: GH_TOKEN_FILE=$GH_TOKEN_FILE が見つかりません（存在しないか通常ファイルではありません）。起動を中止します。" >&2
+    exit 1
+  fi
+  gh_token_perm=$(stat -c '%a' "$GH_TOKEN_FILE" 2>/dev/null || stat -f '%Lp' "$GH_TOKEN_FILE" 2>/dev/null || echo "")
+  if [[ -n "$gh_token_perm" && "$gh_token_perm" != "600" ]]; then
+    echo "WARNING: GH_TOKEN_FILE=$GH_TOKEN_FILE のパーミッションが $gh_token_perm です。chmod 600 を推奨します。" >&2
+  fi
+fi
+
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
 # プロジェクト側の .claude-container.d/ にあればそちらを、

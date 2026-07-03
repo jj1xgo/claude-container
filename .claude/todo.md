@@ -1,20 +1,5 @@
 # Todo
 
-## best_practices 蓄積・注入の仕組み整備（2026-07-02）
-
-findsummits の best_practices.md 自動注入の仕組みを移植。
-
-- [x] CLAUDE.md に `@.claude/best_practices.md` インポート行を追加
-- [x] handover の学び5件を lessons.md へ転記
-- [x] Fable に session-start.sh 改修を設計させる（lessons.md 全文注入 → watermark 以降の未蒸留分のみ注入）
-- [x] `session-start.sh` を Fable 設計案どおり改修
-- [x] CLAUDE.md の説明文を実態（未蒸留分のみ注入）に合わせて更新
-- [x] `bash -n` 構文チェック
-- [x] 実機で session-start.sh を実行し注入内容を目視確認（watermark 未作成時の全件出力・watermark>0の境界条件の両方をテスト）
-- [ ] コミット
-
----
-
 ## Dockerfile.claude 軽量化 & bash history 修正
 
 **詳細計画**: `/workspace/.claude/mgmt/plan.md` 参照
@@ -106,5 +91,4 @@ findsummits の best_practices.md 自動注入の仕組みを移植。
 findsummits側からのフィードバック対応（2026-07-02）で、ユーザー判断により今回のスコープ外とした項目。
 
 - **GitHub書き込み認証（GH_TOKEN等）の配線設計**: findsummits側からクロスプロジェクト連絡チャネル（GitHub Issues案）実現のため要望あり。現状このコンテナにはgh認証・SSH鍵・credential helperが一切配線されていない。セキュリティ上の設計判断（トークンの置き場所・スコープ・.claude-container経由でのファイル露出リスク等）が必要なため、着手前にPlan Modeでの合意が必要
-- **findsummits側 `.claude-container.d/allowed-domains.txt` へのPyPIドメイン追加**: findsummits側の設定漏れ（`pypi.org`だけでなく`files.pythonhosted.org`も必要）。claude-container側の対応ではなくfindsummits側で行う作業。README側は追記済み（利用側プロジェクトの設定節）
-- **findsummits側venv復旧**: `make venv-rebuild`実行によりvenvが空になり、上記PyPI到達不可のためローカル復旧不可能な状態（findsummits側 `.claude/incidents/2026-07-02_2226_venv-rebuild-network-blocked.md` 参照）。findsummits側の作業
+  - 2026-07-03: PyPI/venv関連2件はfindsummits側で解決したとの連絡あり（下記参照、削除済み）。本項目はユーザー確認により継続検討対象（要望自体は撤回されていない）

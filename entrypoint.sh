@@ -32,4 +32,15 @@ for f in \
   /home/node/.claude/plugins/known_marketplaces.json; do
   [ -f "$f" ] && sed -i "s|/home/[^/]*/\.claude|/home/node/.claude|g" "$f"
 done
+
+# GitHub Issues 書き込み用トークン（GH_TOKEN_FILE、compose.yml が読み取り専用マウント）。
+# ファイルから読んでここで export する（compose.yml の environment: に直接書かない）ことで、
+# トークンが `podman inspect`/`podman compose config` のコンテナ設定に残らないようにする。
+# gh CLI は GH_TOKEN 環境変数を自動認識するため gh auth login は不要。
+GH_TOKEN_MOUNT=/home/node/.config/claude-container/gh-token
+if [ -s "$GH_TOKEN_MOUNT" ]; then
+  GH_TOKEN="$(tr -d '\n\r' <"$GH_TOKEN_MOUNT")"
+  export GH_TOKEN
+fi
+
 exec claude --dangerously-skip-permissions

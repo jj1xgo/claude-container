@@ -1,38 +1,38 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+このファイルは、このリポジトリでコードを扱う際に Claude Code (claude.ai/code) に向けたガイダンスを提供する。
 
 ## プロジェクト概要
 
 [findsummits](https://github.com/JJ1XGO/findsummits) プロジェクト向けの Claude Code サンドボックス環境。
 [sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークし、findsummits の開発環境に合わせてカスタマイズしたもの。apt/pip パッケージは `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
-## Usage
+## 使い方
 
 ```bash
 ./claude-container /path/to/project
 ```
 
-Full command reference (`-b` rebuild, `--clean`, symlink support) is in README.md's "Usage" section (日本語版「使い方」).
+コマンドの全リファレンス（`-b` によるリビルド、`--clean`、シンボリックリンク対応）は README.md の「使い方」節を参照。
 
-## Environment Variables
+## 環境変数
 
-Set via a `.claude-container` file (`KEY=VALUE` lines) at the target project root, read automatically before launch. Values are taken literally after the first `=` — no quoting, expansion, or command execution is interpreted. The file is deliberately NOT `source`d, so a malicious target project cannot run code on the host.
+対象プロジェクトのルートに置いた `.claude-container` ファイル（`KEY=VALUE` 形式の行）で設定し、起動前に自動で読み込まれる。値は最初の `=` 以降を文字どおりに扱う — クォート・展開・コマンド実行は一切解釈されない。このファイルは意図的に `source` しないため、悪意あるターゲットプロジェクトがホスト上でコードを実行することはできない。
 
-Variable list and defaults are in README.md's "Environment Variables" section (日本語版「環境変数」).
+変数一覧とデフォルト値は README.md の「環境変数」節を参照。
 
-## Architecture
+## アーキテクチャ
 
 > **前提**: 本節以降の `/home/node/` 等のパスや `sudo` コマンドは、`./claude-container` 経由で実際に起動した**コンテナ内部**の事実を説明したものである。このリポジトリのソースをコンテナを介さずホスト上で直接編集している場合、これらのパス・コマンドは実在しない（ビルド対象の仕様として読むこと）。
 
-The main files work together:
+主要ファイルが連携して動作する:
 
-- **`claude-container`** (bash) — entry point. Resolves absolute paths, then computes `PROJECT_NAME` from the target project's directory basename (sanitized) plus the first 8 characters of a sha256 hash of its absolute path (e.g. `findsummits-3f2a9c1b`) via `compute_project_name()`. This keys the image name (`localhost/<PROJECT_NAME>_claude-auth-workspace`) and the staged build context (`.build-context/<PROJECT_NAME>/`) per project, and `-p "$PROJECT_NAME"` is passed to every `podman compose` invocation — without this, interleaving builds across different target projects would silently overwrite each other's image and staged context (real incident, 2026-07-02). Reads `KEY=VALUE` lines from the target project's `.claude-container` (safe parse, no `source`), then sets `CONTEXT` and `CLAUDE_CONTAINER_DIR` and delegates to `podman compose run`. When `-b` is passed, sets `CACHEBUST` to the current epoch seconds so the install layer is always rebuilt, and runs `podman compose build` as a separate step before `run` — `run --build` would fall back to the existing stale image when the build fails (fail-open), whereas the separate build step aborts the launch on failure (fail-closed). Before building (on `-b`, or when the image doesn't exist yet), it stages `entrypoint.sh` and `init-firewall.sh` plus the target project's `.claude-container.d/packages.txt` / `requirements.txt` / `allowed-domains.txt` (falling back to claude-container's own bundled copies when the project doesn't provide them) into that project's `BUILD_CONTEXT_DIR`. A fixed path per project (not `mktemp -d`) is used so build caching stays stable and no cleanup trap is needed. `stage_build_context()` also fetches the GitHub meta snapshot here (see "GitHub meta スナップショット" below). `--clean <directory>` removes only that project's image/network/build-context; `--clean` with no directory (`clean_all()`) discovers every `localhost/*_claude-auth-workspace` image and removes all of them, including the legacy pre-migration shared image `localhost/claude-container_claude-auth-workspace`.
-- **`compose.yml`** — defines the single service `claude-auth-workspace`. `build.context` is `${BUILD_CONTEXT_DIR}` (the staged directory above); `build.dockerfile` is `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` — Dockerfiles can live outside the build context, so `Dockerfile.claude` itself is read directly from the claude-container repo without staging. Mounts the host's `~/.claude.json` and `~/.claude/` (auth + config), the target workspace at `/workspace`, and `/etc/localtime` (read-only, for host timezone). Uses `userns_mode: keep-id` so files inside the container have the same UID as the host user. Adds `NET_ADMIN`/`NET_RAW` capabilities so `init-firewall.sh` can install iptables rules inside the container's network namespace. Passes `CACHEBUST` as a build arg to enable cache-busting on `-b`. Sets `net.ipv6.conf.{all,default}.disable_ipv6=1` via `sysctls` — podman's default bridge network has no IPv6 global route (link-local `fe80::` only), but glibc's `getaddrinfo(AI_ADDRCONFIG)` still reports IPv6 as available and returns AAAA records, so curl/requests' Happy Eyeballs intermittently stalls trying unreachable IPv6 candidates for allowlisted CDN-backed domains. This is the primary fix; `init-firewall.sh`'s `ip6tables` DROP (below) remains the security boundary regardless.
-- **`Dockerfile.claude`** — builds on `debian:stable` (currently trixie), installs Claude Code dependencies and the staged `packages.txt`/`requirements.txt` (see above), then installs Claude Code via the official native installer (`curl -fsSL https://claude.ai/install.sh | bash`). It also `COPY`s the `github-meta.json` staged by `claude-container` and validates it with `jq` — no network call happens in this layer, so Docker's content-hash caching handles it naturally (see "GitHub meta スナップショット" below). An `ARG CACHEBUST` is declared immediately before the install `RUN`, ensuring the install layer (and everything below it) is never served from cache when `-b` is used. Runs as the non-root `node` user (UID 1000, created explicitly) with `CMD ["/home/node/entrypoint.sh"]` (which applies the firewall, then execs `claude --dangerously-skip-permissions`). `ENTRYPOINT ["/usr/bin/tini", "--"]` puts `tini` at PID1 so entrypoint.sh and the claude process it execs into run as its child. Without an init process claude itself was PID1: it never reaped children reparented to PID1 (the firewall refresh loop's sudo helpers accumulated as zombies, ~1 per 15s cycle, real incident 2026-07-02), and when claude wedged on exit (same day: a host-kernel workqueue Oops left an unkillable D-state thread, making PID1 an unreapable zombie), crun could no longer signal PID1 at all — `crun kill ... failed: exit status 1` / "No such process" on the host, `podman stop` unable to complete, container stuck in "Stopping". tini keeps PID1 live and signalable so reaping and `podman stop` keep working (it cannot unwedge a kernel-side D-state process). `tini` is installed in the fixed apt-get layer rather than `packages.txt` so a project's own `packages.txt` can't silently drop it (same reasoning as `sudo`/`iptables`). `debian:stable` を採用した理由: native installer の Claude Code バイナリは glibc のみ依存で Node.js を実行時に必要とせず、Node.js 同梱の `node:24` より軽量な Debian ベースで足りるため。注意: `ca-certificates` は debian:stable にも**同梱されていない**ため、HTTP で先行インストールしてから apt sources を HTTPS に書き換える（Dockerfile 冒頭が2段構成なのはこのため。削除しないこと）。
+- **`claude-container`**（bash）— エントリーポイント。絶対パスを解決したうえで、`compute_project_name()` によりターゲットプロジェクトのディレクトリ名（basename、サニタイズ済み）と絶対パスの sha256 先頭8文字を組み合わせて `PROJECT_NAME` を算出する（例: `findsummits-3f2a9c1b`）。これによりイメージ名（`localhost/<PROJECT_NAME>_claude-auth-workspace`）とステージングされたビルドコンテキスト（`.build-context/<PROJECT_NAME>/`）をプロジェクトごとに分離し、すべての `podman compose` 呼び出しに `-p "$PROJECT_NAME"` を渡す — これが無いと、異なるターゲットプロジェクトのビルドを交互に行った際に互いのイメージとステージング済みコンテキストが無言で上書きされてしまう（実インシデント、2026-07-02）。ターゲットプロジェクトの `.claude-container` から `KEY=VALUE` 行を読み込み（安全なパース、`source` はしない）、`CONTEXT` と `CLAUDE_CONTAINER_DIR` を設定して `podman compose run` に処理を委譲する。`-b` が渡された場合は `CACHEBUST` に現在のエポック秒を設定して install レイヤーが必ずリビルドされるようにし、`podman compose build` を `run` とは別ステップとして実行する — `run --build` はビルド失敗時に既存の古いイメージへフォールバックしてしまう（fail-open）のに対し、別ステップにすることで失敗時は起動を中断する（fail-closed）。ビルド前（`-b` 指定時、またはイメージが未ビルドの場合）に、`entrypoint.sh` と `init-firewall.sh`、およびターゲットプロジェクトの `.claude-container.d/packages.txt` / `requirements.txt` / `allowed-domains.txt`（プロジェクトが提供しない場合は claude-container 同梱のコピーにフォールバック）を、そのプロジェクト専用の `BUILD_CONTEXT_DIR` にステージングする。プロジェクトごとに固定パスを使う（`mktemp -d` は使わない）ことで、ビルドキャッシュを安定させ、クリーンアップ用の trap も不要にしている。`stage_build_context()` はここで GitHub meta スナップショットの取得も行う（詳細は下記「GitHub meta スナップショット」参照）。`--clean <directory>` はそのプロジェクト分のイメージ・ネットワーク・ビルドコンテキストのみを削除する。ディレクトリ指定なしの `--clean`（`clean_all()`）は、存在する `localhost/*_claude-auth-workspace` イメージすべてを走査し、移行前のレガシー共有イメージ `localhost/claude-container_claude-auth-workspace` も含めてすべて削除する。
+- **`compose.yml`** — サービス `claude-auth-workspace` を1つだけ定義する。`build.context` は `${BUILD_CONTEXT_DIR}`（上記でステージングされたディレクトリ）、`build.dockerfile` は `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` — Dockerfile はビルドコンテキストの外に置けるため、`Dockerfile.claude` 自体はステージングせず claude-container リポジトリから直接読み込む。ホストの `~/.claude.json` と `~/.claude/`（認証＋設定）、対象ワークスペース（`/workspace`）、`/etc/localtime`（読み取り専用、ホストのタイムゾーン用）をマウントする。`userns_mode: keep-id` により、コンテナ内のファイルがホストユーザーと同じ UID を持つようにする。`init-firewall.sh` がコンテナのネットワーク名前空間に iptables ルールを設定できるよう `NET_ADMIN`/`NET_RAW` の capability を追加する。`-b` 時のキャッシュ破棄を有効にするため `CACHEBUST` をビルド引数として渡す。`sysctls` で `net.ipv6.conf.{all,default}.disable_ipv6=1` を設定する — podman のデフォルトブリッジネットワークには IPv6 のグローバルルートが無い（リンクローカルの `fe80::` のみ）が、glibc の `getaddrinfo(AI_ADDRCONFIG)` はそれでも IPv6 が利用可能と報告し AAAA レコードを返すため、curl/requests の Happy Eyeballs が許可リスト対象の CDN 系ドメインへの到達不能な IPv6 候補を試みて間欠的に停止することがある。これが主対策であり、`init-firewall.sh` の `ip6tables` DROP（後述）は変わらずセキュリティ境界として機能する。
+- **`Dockerfile.claude`** — `debian:stable`（現在は trixie）をベースにビルドし、Claude Code の依存パッケージとステージングされた `packages.txt`/`requirements.txt`（前述）をインストールしたうえで、公式 native installer（`curl -fsSL https://claude.ai/install.sh | bash`）で Claude Code をインストールする。`claude-container` がステージングした `github-meta.json` も `COPY` して `jq` で検証する — このレイヤーではネットワーク呼び出しが発生しないため、Docker の content-hash キャッシュが自然に効く（詳細は下記「GitHub meta スナップショット」参照）。install の `RUN` 直前に `ARG CACHEBUST` を宣言しており、`-b` 使用時は install レイヤー（以降のすべて）が必ずキャッシュを使わず再実行される。非 root の `node` ユーザー（UID 1000、明示的に作成）で動作し、`CMD ["/home/node/entrypoint.sh"]`（ファイアウォールを適用したのち `claude --dangerously-skip-permissions` を exec する）を実行する。`ENTRYPOINT ["/usr/bin/tini", "--"]` により `tini` を PID1 に据え、entrypoint.sh とそれが exec する claude プロセスをその子として動かす。init プロセスが無いと claude 自身が PID1 になり、PID1 に再親付けされた子プロセス（ファイアウォール更新ループの sudo 補助プロセス）を reap できずゾンビとして蓄積し（15秒サイクルごとに約1個、実インシデント 2026-07-02）、さらに claude が終了時にハングした場合（同日: ホストカーネルの workqueue Oops により kill 不能な D 状態スレッドが残り、PID1 が reap 不能なゾンビになった）、crun は PID1 に一切シグナルを送れなくなる — ホスト側で `crun kill ... failed: exit status 1` / "No such process"、`podman stop` が完了できず、コンテナが "Stopping" のまま固着する。tini を PID1 に据えることで PID1 が生存しシグナル送信可能な状態を保ち、reap と `podman stop` が機能し続ける（カーネル側の D 状態ハング自体は tini でも解消できない）。`tini` は `packages.txt` ではなく固定の apt-get レイヤーにインストールする — プロジェクト側の `packages.txt` によって黙って落とされないようにするため（`sudo`/`iptables` と同じ理由）。`debian:stable` を採用した理由: native installer の Claude Code バイナリは glibc のみ依存で Node.js を実行時に必要とせず、Node.js 同梱の `node:24` より軽量な Debian ベースで足りるため。注意: `ca-certificates` は debian:stable にも**同梱されていない**ため、HTTP で先行インストールしてから apt sources を HTTPS に書き換える（Dockerfile 冒頭が2段構成なのはこのため。削除しないこと）。
 - **`entrypoint.sh`** — コンテナ起動時に実行されるシェルスクリプト。まず `sudo /usr/local/bin/init-firewall.sh` でエグレス制限を適用し（失敗時は起動中断＝fail-closed。`CLAUDE_CONTAINER_NO_FIREWALL=1` で警告表示の上スキップ）、次にバックグラウンドで `sudo init-firewall.sh --refresh-domains` を15秒間隔で回すループを `&` で起動する（CDNの短いTTLによるIPローテーション追従。詳細は下記「CDN IP ローテーション追従」参照）。ループの出力は対話TUIの端末（`compose.yml` の `tty: true`）を汚さないよう `/tmp/claude-firewall-refresh.log` へリダイレクトする。`exec claude --dangerously-skip-permissions` はこのシェル自身のプロセスイメージを置き換えるだけなので、`&` で先にフォークしたループはそのまま子プロセスとして生き続ける。`CLAUDE_CONTAINER_NO_FIREWALL=1` 時はこのループも起動しない。PID1 は tini（`Dockerfile.claude` 節参照）。最後に `~/.claude/plugins/` 内の設定ファイルに残存するホスト側ユーザーのパス（例: `/home/tsu/.claude`）をコンテナ内パス（`/home/node/.claude`）に自動修正する。ホスト側とコンテナ内でユーザー名が異なる環境でのプラグインパス不整合を吸収するための仕組み。
 - **`init-firewall.sh`** — deny-by-default のエグレス許可リスト。Anthropic 公式 devcontainer の同名スクリプトの移植で、iptables で Claude Code に必要なエンドポイント（api.anthropic.com・GitHub IP レンジ等）と `/etc/claude-container/allowed-domains.txt`（ビルド時焼き込み）のドメインのみ許可する。公式との差分: ipset 不使用（rootless podman ではホストの `ip_set` カーネルモジュールを autoload できないため素の iptables ルールで代替）、DNS は `/etc/resolv.conf` のリゾルバ宛のみ、IPv6 は全遮断（許可リストが A レコードのみのため、IPv6 経由のバイパスを防ぐ）。root 所有で node ユーザーは sudoers 定義（`/etc/sudoers.d/node-firewall`）によりこのスクリプトの実行のみ可能 — 実行時にコンテナ内のコードが許可リストを改変できない（sudoers は引数を制限していないため `--refresh-domains` 呼び出しも同じ許可でカバーされる）。GitHub IP レンジは起動時にライブ取得せず、ビルド時に焼き込まれたスナップショット（`/etc/claude-container/github-meta.json`）を読み込むだけ（詳細は下記「GitHub meta スナップショット」参照）。設定完了後に example.com 到達不可・api.github.com / api.anthropic.com 到達可を自己検証する。GitHub 到達確認は API クォータを消費しない TCP 接続確認（`/dev/tcp`）で行う。IPv6 無効化は `compose.yml` の `sysctls` が主対策だが、それが効かない環境向けにこのスクリプト自身も `/proc/sys/net/ipv6/conf/*/disable_ipv6` への書き込みをフォールバックとして試みる（失敗しても警告のみで起動は継続——このスクリプトの他部分の fail-closed 原則に対する意図的な例外）。いずれの結果でも後段の `ip6tables` DROP は変わらず適用される。許可ドメインのIPローテーションには `--refresh-domains` モードで追従する（詳細は下記「CDN IP ローテーション追従」参照）。
-- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container's bundled default apt/pip package lists and extra allowed-domain list (fallback values, kept empty). One entry per line; lines starting with `#` are comments. `requirements.txt` is passed to `pip3 install -r`, but the install step is skipped entirely when the file has no real entries — pip3 is not in the base image, so projects that use `requirements.txt` must add `python3-pip` to their `packages.txt` (the Dockerfile fails with an explicit error otherwise). Lines starting with `-` in `packages.txt` are filtered out at install time so apt options cannot be injected. Project-specific entries belong in the target project's `.claude-container.d/`, not here — claude-container itself must stay project-agnostic.
+- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト apt/pip パッケージ一覧と追加許可ドメイン一覧（フォールバック値、空のまま維持）。1行1エントリ、`#` で始まる行はコメント。`requirements.txt` は `pip3 install -r` にそのまま渡されるが、実質的なエントリが無い場合は install ステップ自体を丸ごとスキップする — ベースイメージに pip3 は含まれていないため、`requirements.txt` を使うプロジェクトは `packages.txt` に `python3-pip` を追加する必要がある（さもないと Dockerfile が明示的なエラーで失敗する）。`packages.txt` 内で `-` から始まる行はインストール時にフィルタされ、apt オプションを注入できないようにしている。プロジェクト固有のエントリはここではなくターゲットプロジェクトの `.claude-container.d/` に置く — claude-container 自体はプロジェクト非依存を保つ必要がある。
 
 ### GitHub meta スナップショット
 
@@ -44,40 +44,42 @@ The main files work together:
 
 対策として、許可ドメインごとの ACCEPT ルールには `-m comment --comment "domain=<domain>;gen=<epoch>"` で世代タグを付与する（GitHub CIDR・ホストネットワークルールにはタグを付けない — 短TTLローテーションと無関係なため）。`entrypoint.sh` が起動するバックグラウンドループから15秒間隔で `init-firewall.sh --refresh-domains` を呼び、チェーンをフラッシュせずに新しい IP を差分追加し、`GRACE_WINDOW_SECONDS`（180秒）を超えて再出現しない IP を個別削除する（実装の詳細手順はスクリプト内コメント参照）。個別ドメインの解決失敗はコンテナを落とさず次サイクルへ持ち越す fail-open 設計（起動時のフル初期化は従来どおり fail-closed のまま）。
 
-### Project-specific packages (`.claude-container.d/`)
+### プロジェクト固有パッケージ（`.claude-container.d/`）
 
-A target project can place `.claude-container.d/packages.txt`, `.claude-container.d/requirements.txt`, and/or `.claude-container.d/allowed-domains.txt` at its root (parallel to `.claude-container` for env vars, but a directory to avoid name collision). If present, these override claude-container's bundled defaults when staging the build context. Absent files fall back to claude-container's bundled generic (empty) defaults, and `stage_build_context()` prints a `WARNING:` line per absent file so the fallback is never silent — a project that used to rely on packages baked into claude-container's own `packages.txt` (before the 2026-07-01 project-agnostic refactor moved project-specific entries out) would otherwise lose those packages on rebuild with no indication why (real incident: findsummits' `gcc`/`python3`/`make` disappeared this way — a separate 2026-07-02 incident from the `PROJECT_NAME` collision above). `allowed-domains.txt` lists extra domains (e.g. `pypi.org`) the egress firewall should allow; it is baked into the image at build time, so changing it requires a `-b` rebuild.
+ターゲットプロジェクトはそのルートに `.claude-container.d/packages.txt`・`.claude-container.d/requirements.txt`・`.claude-container.d/allowed-domains.txt` を置ける（環境変数用の `.claude-container` と対になる名前だが、名前衝突を避けるためディレクトリにしている）。存在する場合、ビルドコンテキストのステージング時に claude-container 同梱のデフォルトを上書きする。ファイルが無ければ claude-container 同梱の汎用（空の）デフォルトにフォールバックし、`stage_build_context()` は無いファイルごとに `WARNING:` 行を出力してフォールバックが無言にならないようにする — 以前は claude-container 自身の `packages.txt` に焼き込まれたパッケージに依存していたプロジェクト（2026-07-01 のプロジェクト非依存化リファクタでプロジェクト固有エントリが外出しされる前）は、そうでないと理由も分からずリビルド時にパッケージを失っていた（実インシデント: findsummits の `gcc`/`python3`/`make` がこうして消失した — 上記の `PROJECT_NAME` 衝突とは別の 2026-07-02 の事案）。`allowed-domains.txt` にはエグレスファイアウォールが許可すべき追加ドメイン（例: `pypi.org`）を列挙する。イメージにビルド時に焼き込まれるため、変更を反映するには `-b` でのリビルドが必要。
 
-The image name is `localhost/<PROJECT_NAME>_claude-auth-workspace` (see the `claude-container` bullet above for how `PROJECT_NAME` is derived). When `-b` is not passed and the image already exists, Compose skips the build step (and the staging step) entirely.
+イメージ名は `localhost/<PROJECT_NAME>_claude-auth-workspace`（`PROJECT_NAME` の算出方法は上記 `claude-container` の項目を参照）。`-b` を渡さずイメージが既に存在する場合、Compose はビルドステップ（およびステージングステップ）を丸ごとスキップする。
 
-## Modifying the Image
+**秘密情報は `.claude-container.d/` にも `.claude-container` にも通さない。** `.claude-container.d/` はビルド時にイメージへ焼き込まれる（秘密情報は禁止 — ビルドコンテキストは秘密の保管場所ではない、後述の「残存リスク」参照）。`.claude-container`（`KEY=VALUE`）はターゲットプロジェクトがコミットすることを前提とするランタイムファイルなので、秘密でない設定（パス・フラグ等）専用 — 秘密の値を直接書き込んだ場合（例: `GH_TOKEN=...`）、そのままではコンテナに渡らないため `claude-container` が警告で検知する。秘密情報の唯一の正規の置き場所は、パスで参照する独立したホスト側ファイル（例: `GH_TOKEN_FILE`、README.md「利用側プロジェクトの設定」参照）である: `compose.yml` がこれを読み取り専用でマウントし、`environment:` ではなく `entrypoint.sh` が読み込んで export するため、`podman inspect` の出力には一切現れない。
 
-Rebuild procedure, `CACHEBUST`/`CLAUDE_CODE_VERSION` handling, `DISABLE_AUTOUPDATER`, and `.build-context/` cleanup are covered in README.md's "Modifying the Image" section (日本語版「イメージの変更」). Implementation pointer: the GitHub meta re-fetch happens inside `claude-container`'s `stage_build_context()` (see "GitHub meta スナップショット" above).
+## イメージの変更
 
-## Persistence Across Container Runs
+リビルド手順、`CACHEBUST`/`CLAUDE_CODE_VERSION` の扱い、`DISABLE_AUTOUPDATER`、`.build-context/` のクリーンアップは README.md の「イメージの変更」節を参照。実装上のポインタ: GitHub meta の再取得は `claude-container` の `stage_build_context()` 内で行われる（上記「GitHub meta スナップショット」参照）。
 
-コンテナ再起動をまたいで保持される bind mount の一覧は README.md の「コンテナ間の永続化」（英語版 "Persistence Across Container Runs"）節を参照。bash_history の `.gitignore` 推奨設定は README.md の「利用側プロジェクトの設定」（英語版 "Target Project Configuration"）節にある。
+## コンテナ間の永続化
 
-## Security Model
+コンテナ再起動をまたいで保持される bind mount の一覧は README.md の「コンテナ間の永続化」節を参照。bash_history の `.gitignore` 推奨設定は README.md の「利用側プロジェクトの設定」節にある。
 
-Claude runs with `--dangerously-skip-permissions` inside the container, meaning it operates without tool-use confirmation prompts. The container boundary is the guardrail — Claude has full read/write access to the mounted workspace and `/data`. Do not mount directories containing sensitive data outside the intended project scope.
+## セキュリティモデル
+
+コンテナ内で Claude は `--dangerously-skip-permissions` で動作するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界であり、Claude はマウントされたワークスペースと `/data` への読み書き権限を全面的に持つ。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしないこと。
 
 ネットワーク面は `init-firewall.sh` による deny-by-default のエグレス許可リストで制限される（既定で有効）。認証情報（`~/.claude.json`）やソースが実行時にマウントされるため、悪意ある pip パッケージやプロンプトインジェクションによる外部送信・C2 化を「許可済みエンドポイント以外への通信不可」で封じる。無効化は利用側プロジェクトの `.claude-container` に `CLAUDE_CONTAINER_NO_FIREWALL=1`。
 
 **残存リスク（許可リストでも防げないもの）:**
 
 - DNS トンネリング: リゾルバ宛 53 番は許可されるため、DNS クエリに載せた exfiltration は原理上可能
-- 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる
+- 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる。`GH_TOKEN_FILE`（README.md「利用側プロジェクトの設定」参照）を設定した場合はこのリスクが能動的になる: プロンプトインジェクションや悪意あるパッケージがトークンを読み取り、そのスコープ内で GitHub へ書き込める（対象リポジトリへの意図しない issue 作成・issue 本文経由の情報送信）。ファイアウォールは GitHub 自体を許可しているため防げず、緩和策は fine-grained PAT のスコープ最小化（Issues のみ・対象リポジトリ限定・短期限）のみ
 - IP ローテーション: 許可ドメインの IP は約15秒間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
 - ビルド時ネットワークは無制限: `pip3 install` は setup.py / build backend の任意コードをビルド時に実行しうる。ただし build context に秘密情報は含まれず、イメージへ焼き込まれた悪性コードの実行時通信は上記 firewall が封じる
 
-## Podman-specific Notes
+## Podman 固有の注意
 
-Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移植時の注意点は README.md の "Podman-specific Notes" 節（日本語版「Podman 固有の注意」）を参照。
+Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移植時の注意点は README.md の「Podman 固有の注意」節を参照。
 
-## Verifying Changes
+## 変更後の確認
 
-テストスイートはない。確認コマンド（`bash -n` の対象・`podman compose config`）は README.md の "Verifying Changes" 節（日本語版「変更後の確認」）を参照。**新しいシェルスクリプトを追加/削除したときは、`bash -n` の対象ファイルリストを README.md と CLAUDE.md の両方で揃えること**（過去に両者がズレていたことがある）。
+テストスイートはない。確認コマンド（`bash -n` の対象・`podman compose config`）は README.md の「変更後の確認」節を参照。**新しいシェルスクリプトを追加/削除したときは、`bash -n` の対象ファイルリストを README.md と CLAUDE.md の両方で揃えること**（過去に両者がズレていたことがある）。
 
 ---
 
