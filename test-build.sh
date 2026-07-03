@@ -51,9 +51,41 @@ check "podman compose config" env \
   podman compose -f "${SCRIPT_DIR}/compose.yml" config
 log ""
 
+# claude-container の stage_build_context() 相当。Dockerfile.claude が要求する
+# entrypoint.sh・init-firewall.sh・allowed-domains.txt・github-meta.json を
+# 一時ディレクトリへ集約する（packages.txt/requirements.txt は呼び出し側で
+# 個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
+# リポジトリルート直下には github-meta.json が存在しないため、直接 $SCRIPT_DIR
+# をビルドコンテキストに渡すと COPY で失敗する（2026-07-02 の GitHub meta
+# スナップショット化以降の既存の不整合、Issue #1 対応の動作確認時に検出・修正）。
+stage_common_context() {
+  local dest="$1"
+  cp "${SCRIPT_DIR}/entrypoint.sh" "$dest/entrypoint.sh"
+  cp "${SCRIPT_DIR}/init-firewall.sh" "$dest/init-firewall.sh"
+  cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
+
+  local sibling
+  if curl -fsS https://api.github.com/meta 2>/dev/null | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
+    return 0
+  fi
+  sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
+  if [[ -n "$sibling" ]]; then
+    echo "WARNING: live GitHub meta fetch failed; reusing $sibling" >&2
+    cp "$sibling" "$dest/github-meta.json"
+  else
+    echo "ERROR: github-meta.json を取得できず、既存スナップショットも見つかりません" >&2
+    return 1
+  fi
+}
+
 log "## ビルド"
+BUILD_STAGE_DIR="$(mktemp -d)"
+stage_common_context "$BUILD_STAGE_DIR"
+cp "${SCRIPT_DIR}/packages.txt" "$BUILD_STAGE_DIR/packages.txt"
+cp "${SCRIPT_DIR}/requirements.txt" "$BUILD_STAGE_DIR/requirements.txt"
 check "podman build --no-cache" podman build --no-cache \
-  -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$IMAGE" "$SCRIPT_DIR"
+  -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$IMAGE" "$BUILD_STAGE_DIR"
+rm -rf "$BUILD_STAGE_DIR"
 log ""
 
 log "## イメージサイズ"
@@ -75,9 +107,9 @@ OVERRIDE_CONTEXT_DIR="$(mktemp -d)"
 mkdir -p "$OVERRIDE_PROJECT_DIR/.claude-container.d"
 echo "htop" > "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt"
 
-# claude-container スクリプトが行うステージング（entrypoint.sh + プロジェクト側
-# packages.txt/requirements.txt をビルドコンテキストへ集約する処理）を模して検証する
-cp "${SCRIPT_DIR}/entrypoint.sh" "$OVERRIDE_CONTEXT_DIR/entrypoint.sh"
+# claude-container スクリプトが行うステージング（プロジェクト側 packages.txt を
+# ビルドコンテキストへ集約する処理）を模して検証する
+stage_common_context "$OVERRIDE_CONTEXT_DIR"
 cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
 cp "${SCRIPT_DIR}/requirements.txt" "$OVERRIDE_CONTEXT_DIR/requirements.txt"
 
@@ -87,6 +119,25 @@ check "htop が入っている"  podman run --rm "$OVERRIDE_IMAGE" which htop
 
 podman rmi "$OVERRIDE_IMAGE" 2>/dev/null
 rm -rf "$OVERRIDE_PROJECT_DIR" "$OVERRIDE_CONTEXT_DIR"
+log ""
+
+log "## .claude-container.d/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"
+ENV_PROJECT_DIR="$(mktemp -d)"
+ENV_STAGE_DIR="$(mktemp -d)"
+mkdir -p "$ENV_PROJECT_DIR/.claude-container.d"
+echo "GH_TOKEN_FILE=~/.config/claude-container/dummy-gh-token" > "$ENV_PROJECT_DIR/.claude-container.d/env"
+
+# claude-container の stage_build_context() を模して、packages.txt/requirements.txt/
+# allowed-domains.txt のみをコピーする（env は対象外）。env がここに含まれていないこと
+# を確認することで、ステージングループが誤ってワイルドカード化されるリグレッションを検出する。
+for f in packages.txt requirements.txt allowed-domains.txt; do
+  cp "${SCRIPT_DIR}/${f}" "$ENV_STAGE_DIR/${f}"
+done
+
+check ".claude-container.d/env がビルドコンテキストに含まれない" \
+  bash -c "[[ ! -e '$ENV_STAGE_DIR/env' ]]"
+
+rm -rf "$ENV_PROJECT_DIR" "$ENV_STAGE_DIR"
 log ""
 
 log "## TZ"
