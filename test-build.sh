@@ -80,11 +80,14 @@ stage_common_context() {
 
 log "## ビルド"
 BUILD_STAGE_DIR="$(mktemp -d)"
-stage_common_context "$BUILD_STAGE_DIR"
-cp "${SCRIPT_DIR}/packages.txt" "$BUILD_STAGE_DIR/packages.txt"
-cp "${SCRIPT_DIR}/requirements.txt" "$BUILD_STAGE_DIR/requirements.txt"
-check "podman build --no-cache" podman build --no-cache \
-  -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$IMAGE" "$BUILD_STAGE_DIR"
+if stage_common_context "$BUILD_STAGE_DIR"; then
+  cp "${SCRIPT_DIR}/packages.txt" "$BUILD_STAGE_DIR/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$BUILD_STAGE_DIR/requirements.txt"
+  check "podman build --no-cache" podman build --no-cache \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$IMAGE" "$BUILD_STAGE_DIR"
+else
+  check "podman build --no-cache (staging failed: see stderr above)" false
+fi
 rm -rf "$BUILD_STAGE_DIR"
 log ""
 
@@ -109,35 +112,58 @@ echo "htop" > "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt"
 
 # claude-container スクリプトが行うステージング（プロジェクト側 packages.txt を
 # ビルドコンテキストへ集約する処理）を模して検証する
-stage_common_context "$OVERRIDE_CONTEXT_DIR"
-cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
-cp "${SCRIPT_DIR}/requirements.txt" "$OVERRIDE_CONTEXT_DIR/requirements.txt"
-
-check "podman build (override context)" podman build --no-cache \
-  -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OVERRIDE_IMAGE" "$OVERRIDE_CONTEXT_DIR"
-check "htop が入っている"  podman run --rm "$OVERRIDE_IMAGE" which htop
+if stage_common_context "$OVERRIDE_CONTEXT_DIR"; then
+  cp "$OVERRIDE_PROJECT_DIR/.claude-container.d/packages.txt" "$OVERRIDE_CONTEXT_DIR/packages.txt"
+  cp "${SCRIPT_DIR}/requirements.txt" "$OVERRIDE_CONTEXT_DIR/requirements.txt"
+  check "podman build (override context)" podman build --no-cache \
+    -f "${SCRIPT_DIR}/Dockerfile.claude" -t "$OVERRIDE_IMAGE" "$OVERRIDE_CONTEXT_DIR"
+  check "htop が入っている"  podman run --rm "$OVERRIDE_IMAGE" which htop
+else
+  check "podman build (override context) (staging failed: see stderr above)" false
+  check "htop が入っている" false
+fi
 
 podman rmi "$OVERRIDE_IMAGE" 2>/dev/null
 rm -rf "$OVERRIDE_PROJECT_DIR" "$OVERRIDE_CONTEXT_DIR"
 log ""
 
 log "## .claude-container.d/env の非混入確認（ランタイム設定はビルド時に焼き込まない）"
-ENV_PROJECT_DIR="$(mktemp -d)"
-ENV_STAGE_DIR="$(mktemp -d)"
+# 模倣コピーではなく claude-container 本体の stage_build_context() を実際に実行させて
+# 検証する。podman をダミー化し「イメージ未ビルド」を常に返させることでビルド分岐に
+# 入らせ、実際のステージング結果（.build-context/<project>/）に env が無いことを見る。
+# こうすることで、本体のステージングループが将来ワイルドカード化されるリグレッションを
+# 実地で検出できる（コピー処理を模倣するだけのテストは本体が壊れても検知できない）。
+ENV_TESTROOT="$(mktemp -d)"
+mkdir -p "$ENV_TESTROOT/bin"
+cat > "$ENV_TESTROOT/bin/podman" <<'DUMMY'
+#!/bin/bash
+case "$1" in
+  image) [[ "$2" == "exists" ]] && exit 1 ;;
+esac
+exit 0
+DUMMY
+chmod +x "$ENV_TESTROOT/bin/podman"
+
+ENV_PROJECT_DIR="$ENV_TESTROOT/proj"
 mkdir -p "$ENV_PROJECT_DIR/.claude-container.d"
-echo "GH_TOKEN_FILE=~/.config/claude-container/dummy-gh-token" > "$ENV_PROJECT_DIR/.claude-container.d/env"
+echo "dummy-token-content" > "$ENV_TESTROOT/dummy-gh-token"
+chmod 600 "$ENV_TESTROOT/dummy-gh-token"
+echo "GH_TOKEN_FILE=$ENV_TESTROOT/dummy-gh-token" > "$ENV_PROJECT_DIR/.claude-container.d/env"
 
-# claude-container の stage_build_context() を模して、packages.txt/requirements.txt/
-# allowed-domains.txt のみをコピーする（env は対象外）。env がここに含まれていないこと
-# を確認することで、ステージングループが誤ってワイルドカード化されるリグレッションを検出する。
-for f in packages.txt requirements.txt allowed-domains.txt; do
-  cp "${SCRIPT_DIR}/${f}" "$ENV_STAGE_DIR/${f}"
-done
+BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1
+AFTER_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
+NEW_BUILD_CONTEXT="$(comm -13 <(echo "$BEFORE_BUILD_CONTEXTS" | sort) <(echo "$AFTER_BUILD_CONTEXTS" | sort) | head -1)"
 
-check ".claude-container.d/env がビルドコンテキストに含まれない" \
-  bash -c "[[ ! -e '$ENV_STAGE_DIR/env' ]]"
+if [[ -n "$NEW_BUILD_CONTEXT" ]]; then
+  check ".claude-container.d/env がビルドコンテキストに含まれない" \
+    bash -c "[[ ! -e '${SCRIPT_DIR}/.build-context/${NEW_BUILD_CONTEXT}/env' ]]"
+  rm -rf "${SCRIPT_DIR}/.build-context/${NEW_BUILD_CONTEXT}"
+else
+  check ".claude-container.d/env がビルドコンテキストに含まれない" false
+fi
 
-rm -rf "$ENV_PROJECT_DIR" "$ENV_STAGE_DIR"
+rm -rf "$ENV_TESTROOT"
 log ""
 
 log "## TZ"

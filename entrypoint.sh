@@ -1,6 +1,6 @@
 #!/bin/bash
 # エグレス制限（deny-by-default 許可リスト）。失敗時は起動しない（fail-closed）。
-# 無効化する場合は利用側プロジェクトの .claude-container に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
+# 無効化する場合は利用側プロジェクトの .claude-container.d/env に CLAUDE_CONTAINER_NO_FIREWALL=1 を書く。
 if [ "${CLAUDE_CONTAINER_NO_FIREWALL:-}" = "1" ]; then
   echo "WARNING: egress firewall disabled (CLAUDE_CONTAINER_NO_FIREWALL=1); container has unrestricted network access" >&2
 else
