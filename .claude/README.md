@@ -48,7 +48,8 @@
 - 未解決インシデント（`.claude/incidents/`）・handover 記載のインシデントを検知し、環境確認チェックリスト
   実行を促す
 - `.claude/lessons.md` の増加件数を `.claude/best_practices_watermark` と比較し、閾値（10件）超過で
-  `/update-best-practices` の実行を推奨
+  初回返答時に `AskUserQuestion` による `/update-best-practices` 実行可否確認を Claude へ指示
+  （stdout はユーザー画面に非表示の Claude 専用 context のため、「推奨」表示のみだと見落とされうる）
 
 `lint-posttool.sh` は PostToolUse イベント（`Write|Edit`）で実行され、編集されたファイルが
 `$CLAUDE_PROJECT_DIR` 配下の bash スクリプト（shebang 判定。`lint.sh` と同じ基準）であれば
