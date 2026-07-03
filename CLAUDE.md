@@ -116,7 +116,7 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 上記は `@` インポートによりセッション開始時に毎回自動でコンテキストへ読み込まれる。lessons.md は全文注入せず、`.claude/hooks/session-start.sh` が `.claude/best_practices_watermark`（前回蒸留時点の件数）以降の未蒸留分のみを自動注入する。全文が必要な場面（転記時の重複チェック等）でのみ都度 Read する。
 
 - 学びの記録先・方法は「コア原則 3. 学びを活かす」参照
-- `/update-best-practices`（グローバルコマンド、Opus 実行）が `.claude/lessons.md` を再分析し、
+- `/update-best-practices`（グローバルコマンド、Fable 実行・利用不可時は Opus）が `.claude/lessons.md` を再分析し、
   `.claude/best_practices.md`（git 管理対象）を再合成する
   - 蒸留観点: ビルド/キャッシュ運用、コンテナ・セキュリティ境界の設計判断、fail-open/fail-closed の選択基準、ドキュメント整合性、実機検証の徹底
   - 原則数目安: 8〜12件（規模に見合った少なめ設定。増えすぎたら統合する）

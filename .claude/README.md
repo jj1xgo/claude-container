@@ -86,7 +86,7 @@ permissions.allow は未定義。
 
 ### best_practices.md・best_practices_watermark
 
-`/update-best-practices`（グローバル skill、Opus 実行）が `lessons.md` を再分析して合成する高レベル原則集。
+`/update-best-practices`（グローバル skill、Fable 実行・利用不可時は Opus）が `lessons.md` を再分析して合成する高レベル原則集。
 運用定義はリポジトリルート [CLAUDE.md](../CLAUDE.md)「Best Practices（教訓蒸留）運用ルール」節を参照。
 `best_practices_watermark` は前回合成時点の lessons.md 件数を記録し、`hooks/session-start.sh` が増加量の
 閾値判定に使う。いずれも git 管理対象（`lessons.md` と異なり除外しない）。
