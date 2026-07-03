@@ -215,6 +215,7 @@ stage_build_context() {
   # 他プロジェクトの最新スナップショット（GitHub IP レンジは変更頻度が低いため実用上問題ない）
   # を警告付きで再利用し、いずれも無ければビルドを止める。
   local gh_meta sibling
+  # shellcheck disable=SC2012 # ls は下の elif のみ。パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   if gh_meta=$(curl -fsS https://api.github.com/meta) \
      && echo "$gh_meta" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     echo "$gh_meta" > "$BUILD_CONTEXT_DIR/github-meta.json"

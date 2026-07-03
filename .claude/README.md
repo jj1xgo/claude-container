@@ -12,11 +12,11 @@
 | 要素 | グローバル `~/.claude/` | このプロジェクト `.claude/` |
 |---|---|---|
 | [**CLAUDE.md**](#claudemd-の位置) | 全プロジェクト共通ガイドライン | リポジトリルートに配置 |
-| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + SessionStart hook 登録 |
+| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + SessionStart / PostToolUse hook 登録 |
 | **settings.local.json** | 存在しない | 存在しない（プロジェクト固有 permissions 未定義） |
 | **commands/** | 汎用 skill（handover / log-incident / claude-md-panel / update-best-practices） | 存在しない（ドメイン固有 skill なし） |
 | **rules/** | 存在しない | 存在しない |
-| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨） |
+| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨）+ [`lint-posttool.sh`](#hooks)（PostToolUse hook。bash スクリプト編集時の shellcheck 自動実行） |
 | [**incidents/**](#incidents) | 存在しない | 存在しない（発生時に運用開始。手順は `/log-incident` 参照） |
 | [**handovers/**](#handovers) | 存在しない | セッション引き継ぎノート（このプロジェクト配下・git 管理外） |
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
@@ -36,7 +36,9 @@
 
 ### hooks/
 
-`session-start.sh` のみ導入済み（findsummits の同名 hook を移植）。SessionStart イベント
+`session-start.sh` と `lint-posttool.sh` を導入済み（いずれも findsummits の同名 hook を移植）。
+
+`session-start.sh` は SessionStart イベント
 （`startup|resume|clear|compact`）で実行され、以下を行う:
 
 - 最新 handover 1件・`.claude/lessons.md` の未蒸留分（`.claude/best_practices_watermark` 以降のエントリ）
@@ -48,7 +50,13 @@
 - `.claude/lessons.md` の増加件数を `.claude/best_practices_watermark` と比較し、閾値（10件）超過で
   `/update-best-practices` の実行を推奨
 
-PreToolUse/PostToolUse hook は未定義。
+`lint-posttool.sh` は PostToolUse イベント（`Write|Edit`）で実行され、編集されたファイルが
+`$CLAUDE_PROJECT_DIR` 配下の bash スクリプト（shebang 判定。`lint.sh` と同じ基準）であれば
+shellcheck をかけ、違反を additionalContext で返送する（findsummits の同名 hook の縮小移植）。
+jq / shellcheck 不在時は警告を返してスキップする fail-soft 設計。`.claude/incidents/`・
+`.claude/handovers/` 配下は対象外。
+
+PreToolUse hook は未定義。
 
 ### settings.json
 
@@ -56,6 +64,14 @@ PreToolUse/PostToolUse hook は未定義。
 {
   "skipDangerousModePermissionPrompt": true,
   "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/lint-posttool.sh\"", "timeout": 30 }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup|resume|clear|compact",

@@ -4,6 +4,7 @@
 # リポジトリルートをスクリプト位置から自己解決（コンテナ /workspace・ローカル両対応）
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
+# shellcheck disable=SC2012 # handover ファイル名は /handover が生成する日時形式のみで空白・改行を含まない
 H=$(ls -t "$ROOT"/.claude/handovers/*.md 2>/dev/null | head -1)
 
 echo '# セッション開始ルーティン（自動注入: handover + lessons）'

@@ -81,7 +81,7 @@ Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移
 
 ## 変更後の確認
 
-テストスイートはない。確認コマンド（`bash -n` の対象・`podman compose config`）は README.md の「変更後の確認」節を参照。**新しいシェルスクリプトを追加/削除したときは、`bash -n` の対象ファイルリストを README.md と CLAUDE.md の両方で揃えること**（過去に両者がズレていたことがある）。
+テストスイートはない。`./lint.sh` が集約 lint target（`bash -n`・`shellcheck`・`podman compose config` を一括実行。詳細は README.md の「変更後の確認」節を参照）。対象の bash スクリプトはリポジトリ内ファイル（gitignore 対象を除く追跡済み・未追跡）の shebang から動的に検出するため、スクリプトを追加/削除しても対象リストの手動同期は不要（以前は README.md と CLAUDE.md の両方に `bash -n` の対象リストを手書きしており、ズレたことがある）。編集時は PostToolUse hook（`.claude/hooks/lint-posttool.sh`）が該当ファイルの shellcheck 違反を自動提示する。提示された違反はそのターン内で解消する。
 
 ---
 

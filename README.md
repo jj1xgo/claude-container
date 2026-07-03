@@ -148,12 +148,10 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 テストスイートはない。スクリプトや Compose / Dockerfile を編集した後は以下で確認する。
 
 ```bash
-# シェルスクリプトの構文チェック（shellcheck があればそちらも）
-bash -n claude-container entrypoint.sh init-firewall.sh
-
-# Compose ファイルの検証
-podman compose -f compose.yml config
+./lint.sh
 ```
+
+`lint.sh` は、リポジトリ内の bash スクリプト（gitignore 対象を除く追跡済み・未追跡ファイルから shebang で自動判定するため、スクリプトを追加・削除しても対象リストの更新は不要）への `bash -n` と `shellcheck`、および `podman compose -f compose.yml config` をまとめて実行する。shellcheck 未インストール時はエラーで失敗する（`sudo apt-get install shellcheck` で導入）。podman が無い環境（コンテナ内での開発時）では Compose 検証のみ警告付きでスキップされる。
 
 ### 参考
 
@@ -308,12 +306,10 @@ If `GH_TOKEN_FILE` (above) is set, the "exfiltration to allowed services themsel
 There is no test suite. After editing the script or Compose/Dockerfile, verify with:
 
 ```bash
-# Syntax check the shell scripts (use shellcheck too if available)
-bash -n claude-container entrypoint.sh init-firewall.sh
-
-# Validate Compose file
-podman compose -f compose.yml config
+./lint.sh
 ```
+
+`lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
 
 ### References
 

@@ -68,6 +68,7 @@ stage_common_context() {
   if curl -fsS https://api.github.com/meta 2>/dev/null | tee "$dest/github-meta.json" | jq -e '.web and .api and .git' >/dev/null 2>&1; then
     return 0
   fi
+  # shellcheck disable=SC2012 # パスは PROJECT_NAME（サニタイズ済み）+ 固定ファイル名のみで空白・改行を含まない
   sibling=$(ls -t "${SCRIPT_DIR}"/.build-context/*/github-meta.json 2>/dev/null | head -1)
   if [[ -n "$sibling" ]]; then
     echo "WARNING: live GitHub meta fetch failed; reusing $sibling" >&2

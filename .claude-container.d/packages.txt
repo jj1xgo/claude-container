@@ -1,0 +1,3 @@
+# 本リポジトリ自身を claude-container 内で開発する際にコンテナへ追加する apt パッケージ。
+# lint.sh / lint-posttool.sh（PostToolUse hook）が shellcheck を使うため同梱する。
+shellcheck

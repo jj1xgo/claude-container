@@ -24,11 +24,13 @@ ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
 CHAIN=CLAUDE_EGRESS
 # Shortest observed CDN TTL was 13s; refresh slightly slower than that so a
 # missed tick is caught by the next one rather than by chasing every wobble.
+# The sleep itself lives in entrypoint.sh's refresh loop — keep the two in sync;
+# here the constant sizes the grace window below.
 REFRESH_INTERVAL_SECONDS=15
 # 12 refresh cycles' worth of grace: absorbs a CDN answering with only a
 # subset of its live edge IPs on any single query, and transient resolver
 # hiccups, before a domain's now-unused IP is finally pruned.
-GRACE_WINDOW_SECONDS=180
+GRACE_WINDOW_SECONDS=$((REFRESH_INTERVAL_SECONDS * 12))
 
 MODE=init
 if [ -n "${1:-}" ]; then
