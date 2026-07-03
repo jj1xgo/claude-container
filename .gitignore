@@ -1,5 +1,8 @@
 tmp
 .build-context
+# claude-container 自身を対象プロジェクトとして自己ホスト起動する際の個人設定。
+# GH_TOKEN_FILE 等ホスト固有のパスを含むため、サンプルは .claude-container.example を参照。
+.claude-container
 .claude/lessons.md
 .claude/handovers/
 .claude/incidents/
