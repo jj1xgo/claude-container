@@ -9,21 +9,27 @@ H=$(ls -t "$ROOT"/.claude/handovers/*.md 2>/dev/null | head -1)
 echo '# セッション開始ルーティン（自動注入: handover + lessons）'
 echo '※ 開始ルーティンを満たすため自動注入。関連レッスンがあれば作業前にユーザーへ共有すること。'
 
-# 最新インシデントが未解決なら環境チェック実行を命令（全件ではなく最新1件のみ確認）
-# 古いインシデントは後続セッションで確認済みとみなし、最新1件のみをトリガーとする
+# 全インシデント（.raw.txt除く）を走査し、各ファイルの「最後にマッチした状態行」で未解決を判定する。
+# 最新1件のみを見る旧方式は、複数件の未解決が蓄積すると検知漏れになるため全件走査に変更。
 # フェイルセーフ設計: 「解決済」を明示検出できた場合のみ非警告とする（fail-closed）。
 # 状態行の欠落・表記ゆれ・見出し形式など未知フォーマットは全て警告側に倒し、見逃しを構造的に防ぐ。
-LATEST_INCIDENT=$(ls -t "$ROOT"/.claude/incidents/*.md 2>/dev/null \
-  | grep -v '\.raw\.txt$' | head -1)
-UNRESOLVED=""
-if [ -n "$LATEST_INCIDENT" ] && \
-   ! grep -qE '^\s*[-*]?\s*\*{0,2}状態\*{0,2}\s*[:：]\s*\*{0,2}解決済' "$LATEST_INCIDENT" 2>/dev/null; then
-  UNRESOLVED="$LATEST_INCIDENT"
-fi
-if [ -n "$UNRESOLVED" ]; then
-  echo ''
+UNRESOLVED_LIST=""
+UNRESOLVED_COUNT=0
+for f in "$ROOT"/.claude/incidents/*.md; do
+  [ -e "$f" ] || continue
+  LAST_STATUS=$(grep -E '^\s*[-*]?\s*\*{0,2}状態\*{0,2}\s*[:：]' "$f" 2>/dev/null | tail -1)
+  if ! echo "$LAST_STATUS" | grep -qE '\*{0,2}解決済'; then
+    UNRESOLVED_COUNT=$((UNRESOLVED_COUNT + 1))
+    UNRESOLVED_LIST="${UNRESOLVED_LIST}  - ${f##*/}
+"
+  fi
+done
+
+echo ''
+echo "📋 未解決インシデント: ${UNRESOLVED_COUNT}件"
+if [ "$UNRESOLVED_COUNT" -gt 0 ]; then
+  printf '%s' "$UNRESOLVED_LIST"
   echo '⚠️ 【環境確認チェックリスト実行指示】未解決インシデントがあります。'
-  echo "最新: ${UNRESOLVED##*/}"
   echo 'ユーザーへの最初の返答前に /log-incident の「次セッションでの環境確認チェックリスト」（項目1〜4）を実行し、結果を報告すること。'
 fi
 
@@ -31,7 +37,7 @@ fi
 # 解決済みインシデントはインシデントファイルの「状態」から検出できないため、
 # handoverの記録を補完的に使い、直後セッションで確実に1回環境チェックを実施させる
 # 「なし」バリエーション（なし。/ - なし（補足）等）に依存しない陽性検出で判定する
-if [ -z "$UNRESOLVED" ] && [ -n "$H" ]; then
+if [ "$UNRESOLVED_COUNT" -eq 0 ] && [ -n "$H" ]; then
   INCIDENT_IN_HANDOVER=$(awk \
     '/^## 環境異常・インシデント/{found=1; next} found && /^##/{exit} found && !/^\s*-?\s*なし/{print}' "$H" \
     | grep -E '\.claude/incidents|`[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{4}')

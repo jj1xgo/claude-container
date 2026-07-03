@@ -36,7 +36,7 @@
 
 ### hooks/
 
-`session-start.sh` のみ導入済み（findsummits の同名 hook を移植・簡略化）。SessionStart イベント
+`session-start.sh` のみ導入済み（findsummits の同名 hook を移植）。SessionStart イベント
 （`startup|resume|clear|compact`）で実行され、以下を行う:
 
 - 最新 handover 1件・`.claude/lessons.md` の未蒸留分（`.claude/best_practices_watermark` 以降のエントリ）
