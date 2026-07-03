@@ -6,8 +6,6 @@ tmp
 # ビルド時にイメージへ焼き込まれる共有設定であり、引き続きコミット対象。
 # サンプルは .claude-container.d/env.example を参照。
 .claude-container.d/env
-# 旧方式（非推奨、移行期間中のみ）。理由は上記と同じ。
-.claude-container
 .claude/settings.local.json
 .claude/lessons.md
 .claude/handovers/

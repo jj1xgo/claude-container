@@ -88,11 +88,4 @@
 
 ## 保留
 
-- **`.claude-container.d/env` への移行状況**（2026-07-03、Issue #1対応）: 旧方式 `.claude-container` は `.claude-container.d/env` へ移行済みだが後方互換のため当面残す設計にした。既知の利用側プロジェクトの移行状況: findsummits — 未移行。すべて移行が確認でき次第、`claude-container` 本体の旧方式読み込みコード・警告・CLAUDE.md/README.md の該当記述を削除する
-
-findsummits側からのフィードバック対応（2026-07-02）で、ユーザー判断により今回のスコープ外とした項目。
-
-- **GitHub書き込み認証（GH_TOKEN等）の配線設計**: findsummits側からクロスプロジェクト連絡チャネル（GitHub Issues案）実現のため要望あり。現状このコンテナにはgh認証・SSH鍵・credential helperが一切配線されていない。セキュリティ上の設計判断（トークンの置き場所・スコープ・.claude-container経由でのファイル露出リスク等）が必要なため、着手前にPlan Modeでの合意が必要
-  - 2026-07-03: PyPI/venv関連2件はfindsummits側で解決したとの連絡あり（下記参照、削除済み）。本項目はユーザー確認により継続検討対象（要望自体は撤回されていない）
-
 - **解決済みインシデントの「対策反映」フィールド欠如**（2026-07-03、Fableレビューで指摘）: `/log-incident` 規約はクローズ時に `- 対策反映: <lessons.md追記／hook名／CLAUDE.md節／なし（理由）>` を必須としているが、解決済みの `2026-07-02_1535_host-crash-during-firewall-test.md`・`2026-07-02_1916_host-crash-during-planmode.md`・`2026-07-02_2252_crun-kill-failed-on-session-exit.md` の3件に同フィールドがない（規約準拠は `2026-07-03_1022` のみ）。session-start.sh は機械判定しないため実害はないが、対策済みか横串追跡できない状態が残っている。各ファイルの「状態」記述から対策反映内容を後追いで補記する

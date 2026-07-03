@@ -142,19 +142,9 @@ load_env_file() {
   done < "$file"
 }
 
-# 読み込み元の決定: .claude-container.d/env（新方式）を優先し、無ければ
-# .claude-container（旧方式・非推奨）にフォールバックする。両方存在する場合は
-# キー単位でマージせず新方式のみを採用する — どちらの値が効いているか常に一意に
-# 定まるようにするため。
 ENV_FILE=""
 if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
   ENV_FILE="$PROJECT_CONF_DIR/env"
-  if [[ -f "$WORKING_DIR/.claude-container" ]]; then
-    echo "WARNING: .claude-container.d/env と .claude-container の両方が存在します。.claude-container.d/env を優先し、.claude-container は無視します。" >&2
-  fi
-elif [[ -f "$WORKING_DIR/.claude-container" ]]; then
-  ENV_FILE="$WORKING_DIR/.claude-container"
-  echo "WARNING: .claude-container は非推奨です（当面は動作しますが将来のバージョンで削除予定）。.claude-container.d/env への移行を推奨します。移行方法: mkdir -p .claude-container.d && mv .claude-container .claude-container.d/env（書式は変更不要）。詳細は README.md「環境変数」節を参照。" >&2
 fi
 [[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
 
