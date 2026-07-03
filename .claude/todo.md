@@ -88,6 +88,8 @@
 
 ## 保留
 
+- **`.claude-container.d/env` への移行状況**（2026-07-03、Issue #1対応）: 旧方式 `.claude-container` は `.claude-container.d/env` へ移行済みだが後方互換のため当面残す設計にした。既知の利用側プロジェクトの移行状況: findsummits — 未移行。すべて移行が確認でき次第、`claude-container` 本体の旧方式読み込みコード・警告・CLAUDE.md/README.md の該当記述を削除する
+
 findsummits側からのフィードバック対応（2026-07-02）で、ユーザー判断により今回のスコープ外とした項目。
 
 - **GitHub書き込み認証（GH_TOKEN等）の配線設計**: findsummits側からクロスプロジェクト連絡チャネル（GitHub Issues案）実現のため要望あり。現状このコンテナにはgh認証・SSH鍵・credential helperが一切配線されていない。セキュリティ上の設計判断（トークンの置き場所・スコープ・.claude-container経由でのファイル露出リスク等）が必要なため、着手前にPlan Modeでの合意が必要

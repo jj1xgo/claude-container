@@ -130,30 +130,47 @@ if [[ $CLEAN -eq 1 ]]; then
   exit 0
 fi
 
-# プロジェクトの .claude-container ファイルがあれば KEY=VALUE 行のみ環境変数として取り込む。
+# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば環境変数として取り込む。
 # source だと利用側プロジェクトのファイルがホスト上で任意コード実行できてしまうため、
 # 変数代入以外の行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
-if [[ -f "$WORKING_DIR/.claude-container" ]]; then
+load_env_file() {
+  local file="$1"
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
     # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
     export "$line"
-  done < "$WORKING_DIR/.claude-container"
-fi
+  done < "$file"
+}
 
-# .claude-container に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
+# 読み込み元の決定: .claude-container.d/env（新方式）を優先し、無ければ
+# .claude-container（旧方式・非推奨）にフォールバックする。両方存在する場合は
+# キー単位でマージせず新方式のみを採用する — どちらの値が効いているか常に一意に
+# 定まるようにするため。
+ENV_FILE=""
+if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
+  ENV_FILE="$PROJECT_CONF_DIR/env"
+  if [[ -f "$WORKING_DIR/.claude-container" ]]; then
+    echo "WARNING: .claude-container.d/env と .claude-container の両方が存在します。.claude-container.d/env を優先し、.claude-container は無視します。" >&2
+  fi
+elif [[ -f "$WORKING_DIR/.claude-container" ]]; then
+  ENV_FILE="$WORKING_DIR/.claude-container"
+  echo "WARNING: .claude-container は非推奨です（当面は動作しますが将来のバージョンで削除予定）。.claude-container.d/env への移行を推奨します。移行方法: mkdir -p .claude-container.d && mv .claude-container .claude-container.d/env（書式は変更不要）。詳細は README.md「環境変数」節を参照。" >&2
+fi
+[[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
+
+# ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
 # 渡さない設計（トークンを podman inspect に露出させないため）。直書きに気づかず
 # 「動かない」で詰まるのを防ぐ誤用ガード。
-if [[ -f "$WORKING_DIR/.claude-container" ]] && grep -qE '^GH_TOKEN=' "$WORKING_DIR/.claude-container"; then
-  echo "WARNING: .claude-container の GH_TOKEN=... はコンテナに渡されません。GH_TOKEN_FILE=<トークンを保存したファイルへの絶対パス> を使ってください。" >&2
+if [[ -n "$ENV_FILE" ]] && grep -qE '^GH_TOKEN=' "$ENV_FILE"; then
+  echo "WARNING: $ENV_FILE の GH_TOKEN=... はコンテナに渡されません。GH_TOKEN_FILE=<トークンを保存したファイルへの絶対パス> を使ってください。" >&2
 fi
 
 # GitHub Issues 書き込み用トークンのファイル参照（GH_TOKEN_FILE）。トークン本体は
-# ビルドコンテキストにもコミット対象の .claude-container にも置かず、ホスト上の
+# ビルドコンテキストにもコミット対象のランタイム設定ファイルにも置かず、ホスト上の
 # 独立したファイルに置く運用を前提とする。ファイルが無ければ起動を中止する
 # （fail-closed。他の設定ミスと違い、意図した保護が効かないまま起動させないため）。
 if [[ -n "${GH_TOKEN_FILE:-}" ]]; then
-  # .claude-container のパーサーはシェル展開を解釈しないため、先頭の ~/ を自前で正規化する。
+  # ランタイム設定ファイルのパーサーはシェル展開を解釈しないため、先頭の ~/ を自前で正規化する。
   GH_TOKEN_FILE="${GH_TOKEN_FILE/#\~\//$HOME/}"
   export GH_TOKEN_FILE
   if [[ ! -f "$GH_TOKEN_FILE" ]]; then
@@ -170,6 +187,8 @@ fi
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
 # プロジェクト側の .claude-container.d/ にあればそちらを、
 # なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
+# 注意: .claude-container.d/env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
+# 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
 stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
   cp "$RUN_DIR/entrypoint.sh" "$BUILD_CONTEXT_DIR/entrypoint.sh"
@@ -190,6 +209,14 @@ stage_build_context() {
       cp "$RUN_DIR/$file" "$BUILD_CONTEXT_DIR/$file"
     fi
   done
+
+  # 防御的アサーション: env（ランタイム設定）が万一ビルドコンテキストに紛れ込んでいたら
+  # 即座にビルドを止める。将来上記ループがワイルドカードコピーに書き換えられた場合の
+  # リグレッション（ホスト固有パスのイメージ焼き込み）を防ぐための安全網。
+  if [[ -e "$BUILD_CONTEXT_DIR/env" ]]; then
+    echo "ERROR: env がビルドコンテキストに紛れ込んでいます（ランタイム設定はビルド時に焼き込まない設計です）。stage_build_context() の実装を確認してください。" >&2
+    exit 1
+  fi
 
   # GitHub meta スナップショット。init-firewall.sh のファイアウォール許可リストが使う
   # GitHub IP レンジの取得元。未認証 GitHub API のレート制限（60 req/h/IP）を消費するのは
