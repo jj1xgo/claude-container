@@ -84,8 +84,3 @@
 - compose.yml は元の `~/.claude` マウントのまま運用
 - グローバル `~/.claude/` 汚染問題は許容することとして課題クローズ
 
----
-
-## 保留
-
-- **解決済みインシデントの「対策反映」フィールド欠如**（2026-07-03、Fableレビューで指摘）: `/log-incident` 規約はクローズ時に `- 対策反映: <lessons.md追記／hook名／CLAUDE.md節／なし（理由）>` を必須としているが、解決済みの `2026-07-02_1535_host-crash-during-firewall-test.md`・`2026-07-02_1916_host-crash-during-planmode.md`・`2026-07-02_2252_crun-kill-failed-on-session-exit.md` の3件に同フィールドがない（規約準拠は `2026-07-03_1022` のみ）。session-start.sh は機械判定しないため実害はないが、対策済みか横串追跡できない状態が残っている。各ファイルの「状態」記述から対策反映内容を後追いで補記する
