@@ -1,5 +1,6 @@
 {
   "skipDangerousModePermissionPrompt": true,
+  "plansDirectory": ".claude/plans",
   "hooks": {
     "PostToolUse": [
       {

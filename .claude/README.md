@@ -12,7 +12,7 @@
 | 要素 | グローバル `~/.claude/` | このプロジェクト `.claude/` |
 |---|---|---|
 | [**CLAUDE.md**](#claudemd-の位置) | 全プロジェクト共通ガイドライン | リポジトリルートに配置 |
-| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + SessionStart / PostToolUse hook 登録 |
+| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + `plansDirectory: ".claude/plans"` + SessionStart / PostToolUse hook 登録 |
 | **settings.local.json** | 存在しない | 存在しない（プロジェクト固有 permissions 未定義） |
 | **commands/** | 汎用 skill（handover / log-incident / claude-md-panel / update-best-practices） | 存在しない（ドメイン固有 skill なし） |
 | **rules/** | 存在しない | 存在しない |
@@ -21,7 +21,7 @@
 | [**handovers/**](#handovers) | 存在しない | セッション引き継ぎノート（このプロジェクト配下・git 管理外） |
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
 | [**best_practices.md**](#best_practicesmdbest_practices_watermark) | 存在しない | `/update-best-practices` が lessons.md から再合成する原則集（`.claude/` 直下・git 管理対象） |
-| [**plan-\*.md**](#plan-md) | 存在しない | plan承認後の運用ファイル（`.claude/` 直下・git 管理対象）。課題管理は GitHub Issues（ルート CLAUDE.md 参照） |
+| [**plans/**](#plans) | `~/.claude/plans/`（本プロジェクトでは不使用） | Plan Mode の plan ファイル生成先（`plansDirectory` 設定・git 管理対象）。課題管理は GitHub Issues（ルート CLAUDE.md 参照） |
 
 ---
 
@@ -71,6 +71,7 @@ PreToolUse hook は未定義。
 ```json
 {
   "skipDangerousModePermissionPrompt": true,
+  "plansDirectory": ".claude/plans",
   "hooks": {
     "PostToolUse": [
       {
@@ -115,11 +116,13 @@ permissions.allow は未定義。
 `best_practices_watermark` は前回合成時点の lessons.md 件数を記録し、`hooks/session-start.sh` が増加量の
 閾値判定に使う。いずれも git 管理対象（`lessons.md` と異なり除外しない）。
 
-### plan-\*.md
+### plans/
 
-Plan Mode で承認された計画（`.claude/plan-<slug>.md`）の保存先。`.claude/` 直下・git 管理対象。
-`/plan` コマンドがシステムの都合で `~/.claude/plans/<slug>.md`（ホーム配下・グローバル）に自動生成するため、
-`ExitPlanMode` 承認後に同じ `<slug>` を使って `mv` で `.claude/plan-<slug>.md` へ移動する。
+Plan Mode の plan ファイル（`.claude/plans/<slug>.md`）の生成先。git 管理対象。
+`settings.json` の `plansDirectory: ".claude/plans"` により、plan ファイルは最初からリポジトリ内の
+このディレクトリに生成される（以前はデフォルトの `~/.claude/plans/`（ホーム配下・グローバル）に生成され、
+承認後に `.claude/plan-<slug>.md` へ `mv` する運用だったが、mv 忘れが実際に発生したため
+設定で根治した、2026-07-04）。
 作業完了時は `git rm` で削除しコミット、中断・持ち越し時は残す
 （リポジトリルート [CLAUDE.md](../CLAUDE.md)「計画ファイル・handover の扱い」参照）。
 
