@@ -153,6 +153,16 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 `lint.sh` は、リポジトリ内の bash スクリプト（gitignore 対象を除く追跡済み・未追跡ファイルから shebang で自動判定するため、スクリプトを追加・削除しても対象リストの更新は不要）への `bash -n` と `shellcheck`、および `podman compose -f compose.yml config` をまとめて実行する。shellcheck 未インストール時はエラーで失敗する（`sudo apt-get install shellcheck` で導入）。podman が無い環境（コンテナ内での開発時）では Compose 検証のみ警告付きでスキップされる。
 
+### バージョニング
+
+[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）のみで管理する（GitHub Releases・CHANGELOG は使わず、タグメッセージが変更概要を兼ねる）。番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
+
+- **MAJOR** — 後方互換性が壊れる変更（デフォルト挙動の変更、設定形式の削除・非互換化など、利用者が対応しないと従来どおり動かないもの）
+- **MINOR** — 後方互換な機能追加（既存の使い方はそのまま動く）
+- **PATCH** — 後方互換なバグ修正のみ
+
+バージョン履歴は `git tag -n1` または GitHub の Tags ページで参照できる。
+
 ### 参考
 
 - [Running Claude Code CLI in a Container (Endpoint Dev Blog)](https://www.endpointdev.com/blog/2026/03/claude-code-cli-in-container/) — フォーク元作者 Seth Jensen によるコンテナ化の解説記事
@@ -310,6 +320,16 @@ There is no test suite. After editing the script or Compose/Dockerfile, verify w
 ```
 
 `lint.sh` runs `bash -n` and `shellcheck` on every bash script in the repository (tracked and untracked files minus gitignored ones, detected by shebang, so the target list needs no maintenance when scripts are added or removed), plus `podman compose -f compose.yml config`. It fails with an explicit error if shellcheck is not installed (`sudo apt-get install shellcheck`). When podman is unavailable (e.g. developing inside the container), only the Compose validation is skipped with a warning.
+
+### Versioning
+
+Releases follow [Semantic Versioning](https://semver.org/) and are managed solely with annotated git tags (`vX.Y.Z`) — no GitHub Releases or CHANGELOG; the tag message doubles as the change summary. Version numbers are judged against the user-visible interface (CLI arguments, the `.claude-container.d/` configuration format, and default behavior):
+
+- **MAJOR** — backward-incompatible changes (changed defaults, removed or incompatible configuration formats — anything that breaks existing usage until the user adapts)
+- **MINOR** — backward-compatible feature additions (existing usage keeps working)
+- **PATCH** — backward-compatible bug fixes only
+
+Browse the version history with `git tag -n1` or on the GitHub Tags page.
 
 ### References
 
