@@ -3,7 +3,7 @@
 ## プロジェクト概要
 
 [findsummits](https://github.com/JJ1XGO/findsummits) プロジェクト向けの Claude Code サンドボックス環境。
-[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークし、findsummits の開発環境に合わせてカスタマイズしたもの。apt/pip パッケージは `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
+[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークし、findsummits の開発環境に合わせてカスタマイズしたもの。apt/pip パッケージや Node.js バージョン等の設定は `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
 ## 使い方
 
@@ -169,9 +169,15 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 判定基準・タグ形式は README.md「バージョニング」節を参照。Claude セッションでの運用は以下のとおり。
 
 - **提案のトリガー**: 利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら（複数コミットにまたがる機能は完了時に1タグ）、Claude は SemVer 判定に基づく番号案と根拠を添えてタグ付与を**提案**する。付与するかの最終判断はユーザーが行う（提案なしに自動でタグを作成しない）。内部品質・docs・hook 調整のみの変更では提案しない
-- **タグ作成**: 承認されたら annotated tag をリリース対象コミットに付与する: `git tag -a vX.Y.Z -m "<変更概要（日本語）>"`
+- **タグ作成**: 承認されたら annotated tag をリリース対象コミットに付与する: `git tag -a vX.Y.Z -m "<メッセージ>"`
+- **タグメッセージのフォーマット**: 見出し1行＋空行＋箇条書き（`- `始まり）が基本形。GitHub の Tags ページがこのメッセージをそのまま表示するため、これが唯一の変更概要になる（下記「GitHub Releases・CHANGELOG は作成しない」参照）
+  - 箇条書きで具体的な変更点・利用者への影響を列挙する
+  - ビルド時焼き込み設定・イメージ内容の変更を伴う場合は箇条書きの最後にリビルド要否を明記する（例: 「リビルド必須」「リビルド不要（スクリプト・ドキュメントのみの変更）」）
+  - 破壊的変更は該当する箇条書き行で明示する
+  - 単発コミットで内容が単純な場合は見出し1行のみでもよい
 - **push はユーザーがホスト側で実行**: コンテナ内の PAT は Issues 限定スコープのため push 不可（仕様）。Claude はタグ作成後、ホスト側で実行する `git push origin vX.Y.Z` コマンドを提示して依頼する
 - **GitHub Releases・CHANGELOG は作成しない**: annotated tag のメッセージが変更概要を兼ねる
+- **既存タグメッセージの書き換え**: 過去タグを書き直す場合も、タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認する）タグオブジェクトのみ再作成する。push は他のタグ作成と同じくユーザーがホスト側で実行する制約に従う
 
 ### ルールと制約
 - **Git**：Conventional Commits形式を使用。本文は日本語で記述（例: `feat: ユーザー認証にOAuth2を追加`）。確認なしに自動コミット・自動pushはしない。
