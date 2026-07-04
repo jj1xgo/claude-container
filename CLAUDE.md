@@ -23,40 +23,30 @@
 
 > **前提**: 本節以降の `/home/node/` 等のパスや `sudo` コマンドは、`./claude-container` 経由で実際に起動した**コンテナ内部**の事実を説明したものである。このリポジトリのソースをコンテナを介さずホスト上で直接編集している場合、これらのパス・コマンドは実在しない（ビルド対象の仕様として読むこと）。
 
-主要ファイルが連携して動作する:
+各ファイルの役割・実装詳細は README.md の「アーキテクチャ」節を参照。以下はコード変更時に見落としやすい不変条件のみを列挙する。
 
-- **`claude-container`**（bash）— エントリーポイント。絶対パスを解決したうえで、`compute_project_name()` によりターゲットプロジェクトのディレクトリ名（basename、サニタイズ済み）と絶対パスの sha256 先頭8文字を組み合わせて `PROJECT_NAME` を算出する（例: `findsummits-3f2a9c1b`）。これによりイメージ名（`localhost/<PROJECT_NAME>_claude-auth-workspace`）とステージングされたビルドコンテキスト（`.build-context/<PROJECT_NAME>/`）をプロジェクトごとに分離し、すべての `podman compose` 呼び出しに `-p "$PROJECT_NAME"` を渡す — これが無いと、異なるターゲットプロジェクトのビルドを交互に行った際に互いのイメージとステージング済みコンテキストが無言で上書きされてしまう（実インシデント、2026-07-02）。ターゲットプロジェクトの `.claude-container.d/env` から `KEY=VALUE` 行を読み込み（安全なパース、`source` はしない）、`CONTEXT` と `CLAUDE_CONTAINER_DIR` を設定して `podman compose run` に処理を委譲する。`-b` が渡された場合は `CACHEBUST` に現在のエポック秒を設定して install レイヤーが必ずリビルドされるようにし、`podman compose build` を `run` とは別ステップとして実行する — `run --build` はビルド失敗時に既存の古いイメージへフォールバックしてしまう（fail-open）のに対し、別ステップにすることで失敗時は起動を中断する（fail-closed）。ビルド前（`-b` 指定時、またはイメージが未ビルドの場合）に、`entrypoint.sh` と `init-firewall.sh`、およびターゲットプロジェクトの `.claude-container.d/packages.txt` / `requirements.txt` / `allowed-domains.txt`（プロジェクトが提供しない場合は claude-container 同梱のコピーにフォールバック）と `node-version.txt`（提供しない場合は同梱デフォルトを持たず、その場で空ファイルを生成する — 他の3ファイルと異なり WARNING も出さない。詳細は下記「Node.js 任意バージョン導入」参照）を、そのプロジェクト専用の `BUILD_CONTEXT_DIR` にステージングする。同じ `.claude-container.d/` 配下でもランタイム設定の `env`（ホスト固有パスを含みうる）はこのステージング対象に意図的に含めない — ビルド時にイメージへ焼き込んではならないため。将来このステージング処理がワイルドカードコピーへ書き換えられて `env` が紛れ込むリグレッションを防ぐため、`stage_build_context()` は `env` がステージング先に存在したら即座に `exit 1` する防御的アサーションを持つ。プロジェクトごとに固定パスを使う（`mktemp -d` は使わない）ことで、ビルドキャッシュを安定させ、クリーンアップ用の trap も不要にしている。`stage_build_context()` はここで GitHub meta スナップショットの取得も行う（詳細は下記「GitHub meta スナップショット」参照）。`--clean <directory>` はそのプロジェクト分のイメージ・ネットワーク・ビルドコンテキストのみを削除する。ディレクトリ指定なしの `--clean`（`clean_all()`）は、存在する `localhost/*_claude-auth-workspace` イメージすべてを走査し、移行前のレガシー共有イメージ `localhost/claude-container_claude-auth-workspace` も含めてすべて削除する。
-- **`compose.yml`** — サービス `claude-auth-workspace` を1つだけ定義する。`build.context` は `${BUILD_CONTEXT_DIR}`（上記でステージングされたディレクトリ）、`build.dockerfile` は `${CLAUDE_CONTAINER_DIR}/Dockerfile.claude` — Dockerfile はビルドコンテキストの外に置けるため、`Dockerfile.claude` 自体はステージングせず claude-container リポジトリから直接読み込む。ホストの `~/.claude.json` と `~/.claude/`（認証＋設定）、対象ワークスペース（`/workspace`）、`/etc/localtime`（読み取り専用、ホストのタイムゾーン用）をマウントする。`userns_mode: keep-id` により、コンテナ内のファイルがホストユーザーと同じ UID を持つようにする。`init-firewall.sh` がコンテナのネットワーク名前空間に iptables ルールを設定できるよう `NET_ADMIN`/`NET_RAW` の capability を追加する。`-b` 時のキャッシュ破棄を有効にするため `CACHEBUST` をビルド引数として渡す。`sysctls` で `net.ipv6.conf.{all,default}.disable_ipv6=1` を設定する — podman のデフォルトブリッジネットワークには IPv6 のグローバルルートが無い（リンクローカルの `fe80::` のみ）が、glibc の `getaddrinfo(AI_ADDRCONFIG)` はそれでも IPv6 が利用可能と報告し AAAA レコードを返すため、curl/requests の Happy Eyeballs が許可リスト対象の CDN 系ドメインへの到達不能な IPv6 候補を試みて間欠的に停止することがある。これが主対策であり、`init-firewall.sh` の `ip6tables` DROP（後述）は変わらずセキュリティ境界として機能する。
-- **`Dockerfile.claude`** — `debian:stable`（現在は trixie）をベースにビルドし、Claude Code の依存パッケージとステージングされた `packages.txt`/`requirements.txt`（前述）をインストールしたうえで、公式 native installer（`curl -fsSL https://claude.ai/install.sh | bash`）で Claude Code をインストールする。`claude-container` がステージングした `github-meta.json` も `COPY` して `jq` で検証する — このレイヤーではネットワーク呼び出しが発生しないため、Docker の content-hash キャッシュが自然に効く（詳細は下記「GitHub meta スナップショット」参照）。install の `RUN` 直前に `ARG CACHEBUST` を宣言しており、`-b` 使用時は install レイヤー（以降のすべて）が必ずキャッシュを使わず再実行される。非 root の `node` ユーザー（UID 1000、明示的に作成）で動作し、`CMD ["/home/node/entrypoint.sh"]`（ファイアウォールを適用したのち `claude --dangerously-skip-permissions` を exec する）を実行する。`ENTRYPOINT ["/usr/bin/tini", "--"]` により `tini` を PID1 に据え、entrypoint.sh とそれが exec する claude プロセスをその子として動かす。init プロセスが無いと claude 自身が PID1 になり、PID1 に再親付けされた子プロセス（ファイアウォール更新ループの sudo 補助プロセス）を reap できずゾンビとして蓄積し（15秒サイクルごとに約1個、実インシデント 2026-07-02）、さらに claude が終了時にハングした場合（同日: ホストカーネルの workqueue Oops により kill 不能な D 状態スレッドが残り、PID1 が reap 不能なゾンビになった）、crun は PID1 に一切シグナルを送れなくなる — ホスト側で `crun kill ... failed: exit status 1` / "No such process"、`podman stop` が完了できず、コンテナが "Stopping" のまま固着する。tini を PID1 に据えることで PID1 が生存しシグナル送信可能な状態を保ち、reap と `podman stop` が機能し続ける（カーネル側の D 状態ハング自体は tini でも解消できない）。`tini` は `packages.txt` ではなく固定の apt-get レイヤーにインストールする — プロジェクト側の `packages.txt` によって黙って落とされないようにするため（`sudo`/`iptables` と同じ理由）。`debian:stable` を採用した理由: native installer の Claude Code バイナリは glibc のみ依存で Node.js を実行時に必要とせず、Node.js 同梱の `node:24` より軽量な Debian ベースで足りるため。注意: `ca-certificates` は debian:stable にも**同梱されていない**ため、HTTP で先行インストールしてから apt sources を HTTPS に書き換える（Dockerfile 冒頭が2段構成なのはこのため。削除しないこと）。
-- **`entrypoint.sh`** — コンテナ起動時に実行されるシェルスクリプト。まず `sudo /usr/local/bin/init-firewall.sh` でエグレス制限を適用し（失敗時は起動中断＝fail-closed。`CLAUDE_CONTAINER_NO_FIREWALL=1` で警告表示の上スキップ）、次にバックグラウンドで `sudo init-firewall.sh --refresh-domains` を15秒間隔で回すループを `&` で起動する（CDNの短いTTLによるIPローテーション追従。詳細は下記「CDN IP ローテーション追従」参照）。ループの出力は対話TUIの端末（`compose.yml` の `tty: true`）を汚さないよう `/tmp/claude-firewall-refresh.log` へリダイレクトする。`exec claude --dangerously-skip-permissions` はこのシェル自身のプロセスイメージを置き換えるだけなので、`&` で先にフォークしたループはそのまま子プロセスとして生き続ける。`CLAUDE_CONTAINER_NO_FIREWALL=1` 時はこのループも起動しない。PID1 は tini（`Dockerfile.claude` 節参照）。最後に `~/.claude/plugins/` 内の設定ファイルに残存するホスト側ユーザーのパス（例: `/home/tsu/.claude`）をコンテナ内パス（`/home/node/.claude`）に自動修正する。ホスト側とコンテナ内でユーザー名が異なる環境でのプラグインパス不整合を吸収するための仕組み。
-- **`init-firewall.sh`** — deny-by-default のエグレス許可リスト。Anthropic 公式 devcontainer の同名スクリプトの移植で、iptables で Claude Code に必要なエンドポイント（api.anthropic.com・GitHub IP レンジ等）と `/etc/claude-container/allowed-domains.txt`（ビルド時焼き込み）のドメインのみ許可する。公式との差分: ipset 不使用（rootless podman ではホストの `ip_set` カーネルモジュールを autoload できないため素の iptables ルールで代替）、DNS は `/etc/resolv.conf` のリゾルバ宛のみ、IPv6 は全遮断（許可リストが A レコードのみのため、IPv6 経由のバイパスを防ぐ）。root 所有で node ユーザーは sudoers 定義（`/etc/sudoers.d/node-firewall`）によりこのスクリプトの実行のみ可能 — 実行時にコンテナ内のコードが許可リストを改変できない（sudoers は引数を制限していないため `--refresh-domains` 呼び出しも同じ許可でカバーされる）。GitHub IP レンジは起動時にライブ取得せず、ビルド時に焼き込まれたスナップショット（`/etc/claude-container/github-meta.json`）を読み込むだけ（詳細は下記「GitHub meta スナップショット」参照）。設定完了後に example.com 到達不可・api.github.com / api.anthropic.com 到達可を自己検証する。GitHub 到達確認は API クォータを消費しない TCP 接続確認（`/dev/tcp`）で行う。IPv6 無効化は `compose.yml` の `sysctls` が主対策だが、それが効かない環境向けにこのスクリプト自身も `/proc/sys/net/ipv6/conf/*/disable_ipv6` への書き込みをフォールバックとして試みる（失敗しても警告のみで起動は継続——このスクリプトの他部分の fail-closed 原則に対する意図的な例外）。いずれの結果でも後段の `ip6tables` DROP は変わらず適用される。許可ドメインのIPローテーションには `--refresh-domains` モードで追従する（詳細は下記「CDN IP ローテーション追従」参照）。
-- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト apt/pip パッケージ一覧と追加許可ドメイン一覧（フォールバック値、空のまま維持）。1行1エントリ、`#` で始まる行はコメント。`requirements.txt` は `pip3 install -r` にそのまま渡されるが、実質的なエントリが無い場合は install ステップ自体を丸ごとスキップする — ベースイメージに pip3 は含まれていないため、`requirements.txt` を使うプロジェクトは `packages.txt` に `python3-pip` を追加する必要がある（さもないと Dockerfile が明示的なエラーで失敗する）。`packages.txt` 内で `-` から始まる行はインストール時にフィルタされ、apt オプションを注入できないようにしている。プロジェクト固有のエントリはここではなくターゲットプロジェクトの `.claude-container.d/` に置く — claude-container 自体はプロジェクト非依存を保つ必要がある。
+- **`claude-container`** — `compute_project_name()` による `PROJECT_NAME`（basename+sha256先頭8文字）でイメージ名・ビルドステージング先をプロジェクトごとに分離する構造を壊さない。固定パスに戻すと複数プロジェクト交互ビルドで無言の上書きが再発する（2026-07-02）。`-b` 時の build と run は別ステップのまま（fail-closed）。`stage_build_context()` の「`env` がステージング先に存在したら `exit 1`」防御的アサーションを削除しない（`env` はビルド時焼き込み禁止）。GitHub meta 取得はここ1箇所のみで行う（詳細は下記「GitHub meta スナップショット」参照）。ステージング時は `node-version.txt`（詳細は下記「Node.js 任意バージョン導入」参照）も対象に含める。
+- **`compose.yml`** — IPv6 無効化の `sysctls` と `init-firewall.sh` の `ip6tables` DROP は両方必要（片方だけでは glibc の Happy Eyeballs 経由の間欠停止を防げない、2026-07-02）。`userns_mode: keep-id`・`NET_ADMIN`/`NET_RAW` capability は維持する。
+- **`Dockerfile.claude`** — `ca-certificates` の HTTP→HTTPS 2段階インストール順序を変えない（debian:stable 未同梱のため。削除しないこと）。`tini` を PID1 に据える構成、および `packages.txt` でなく固定 apt-get レイヤーに置く配置を変えない（プロジェクト側上書きでの消失防止。関連インシデント: `.claude/incidents/2026-07-02_2252_crun-kill-failed-on-session-exit.md`）。`ARG CACHEBUST` はキャッシュ破棄用に `RUN` 内で実際に参照して初めて効く（宣言のみでは無効、2026-06-11）。GitHub meta の検証は下記「GitHub meta スナップショット」参照。
+- **`entrypoint.sh`** — ファイアウォール適用（fail-closed）→バックグラウンド更新ループ起動（詳細は下記「CDN IP ローテーション追従」参照）→`exec claude` の順序を変えない。PID1 は tini（`Dockerfile.claude` 項目参照）。
+- **`init-firewall.sh`** — ipset は使わない（rootless podman で `ip_set` カーネルモジュールを autoload できないため素の iptables で代替）。GitHub IP レンジはビルド時スナップショットの読み込みのみ、ランタイムでのライブ取得を追加しない（詳細は下記「GitHub meta スナップショット」参照）。ドメイン IP の追従は下記「CDN IP ローテーション追従」参照。
+- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト（フォールバック値）。`node-version.txt` は同梱デフォルトを持たず WARNING も出さない（既存3ファイルとの非対称は既知、issue #7 で再検討中）。
 
 ### Node.js 任意バージョン導入（`node-version.txt`）
 
-apt 経由では入手できない Node.js バージョン（例: debian:stable/trixie は 20.x、testing は 22 を飛ばして 24.x のため 22.x が入手不可）が必要なプロジェクト向けに、`.claude-container.d/node-version.txt` にバージョン番号（例: `22.14.0`）を1行書くだけで導入できる仕組み。汎用的な任意スクリプト実行フック（issue #3 で当初提案されたもの）は監査対象が無限定になるため採用せず、専用の宣言的ファイルとした（既存の packages.txt 等と同じ「宣言＋本体側固定ロジック」設計に揃えるため）。`Dockerfile.claude` が nodejs.org 公式 tarball を取得・検証して導入する（失敗時はビルドごと止める fail-closed。手順は Dockerfile 内コメント参照）。ビルド時ネットワークは無制限のため `allowed-domains.txt` への追加は不要。プロジェクトが `node-version.txt` を提供しない場合（大多数のプロジェクトはこれに該当）、`claude-container` はその場で空ファイルを生成するだけで WARNING は出さない — packages.txt 等の WARNING は「過去に本体直書きだった設定の移行漏れ」を検知するためのものであり、node-version.txt には移行元が存在しない新設の任意機能のため、性質が異なると判断した（既存3ファイルの WARNING 設計自体の見直しは別 issue で扱う）。
+詳細は README.md「利用側プロジェクトの設定」節を参照。設計判断: 汎用スクリプト実行フックにせず宣言的ファイルにした（監査対象を無限定にしないため）。
 
 ### GitHub meta スナップショット
 
-`init-firewall.sh` の許可リストが使う GitHub IP レンジは `https://api.github.com/meta` から取得する。未認証 GitHub API のレート制限（60 req/h/IP）を避けるため、取得は `claude-container` の `stage_build_context()` 内の1箇所でのみ行う（`-b` のたび最大1リクエスト）。取得結果は `.build-context/<PROJECT_NAME>/github-meta.json` に書き込まれ、`Dockerfile.claude` がそれを `COPY` してイメージへ焼き込む（ネットワーク呼び出しを伴わないので通常の content-hash キャッシュが効く）。取得に失敗した場合は、(1) このプロジェクトの `.build-context/<PROJECT_NAME>/`（`--clean` まで永続する固定パス）に残っている前回分、(2) それも無ければ他プロジェクトの最新スナップショット（新規プロジェクトの初回ビルド時のフォールバック。GitHub の IP レンジは変更頻度が低いため実用上問題ない）を警告付きで再利用し、いずれも無い場合のみビルドを中断する。`init-firewall.sh` は起動のたびにこのイメージ内スナップショットを読み込むだけで、ランタイムでのライブ取得は行わない — GitHub の IP レンジは変更頻度が低いため、`-b` のたびに更新される多少古いコピーでも実用に足りる。
+詳細は README.md「アーキテクチャ」内「GitHub meta スナップショット」節を参照。未認証GitHub APIレート制限回避のため取得は `stage_build_context()` 内1箇所のみ（2026-07-02）。
 
 ### CDN IP ローテーション追従
 
-`allowed-domains.txt` 等で許可した CDN 配下のドメイン（例: CloudFront）は DNS の TTL が短く（実測 13〜60秒）、A レコードのセットがセッション中に丸ごと切り替わることがある。`init-firewall.sh` は起動時にドメインを1回解決して個別 IP を `/32` で許可するため、そのままではローテーション後に新規接続が失敗し続ける（2026-07 に実障害として確認）。
-
-対策として、許可ドメインごとの ACCEPT ルールには `-m comment --comment "domain=<domain>;gen=<epoch>"` で世代タグを付与する（GitHub CIDR・ホストネットワークルールにはタグを付けない — 短TTLローテーションと無関係なため）。`entrypoint.sh` が起動するバックグラウンドループから15秒間隔で `init-firewall.sh --refresh-domains` を呼び、チェーンをフラッシュせずに新しい IP を差分追加し、`GRACE_WINDOW_SECONDS`（180秒）を超えて再出現しない IP を個別削除する（実装の詳細手順はスクリプト内コメント参照）。個別ドメインの解決失敗はコンテナを落とさず次サイクルへ持ち越す fail-open 設計（起動時のフル初期化は従来どおり fail-closed のまま）。
+詳細は README.md「アーキテクチャ」節（`init-firewall.sh` の説明内）を参照。世代タグ（`gen=<epoch>`）による差分リフレッシュ構造を壊さない — 起動時1回解決に戻すと CDN の IP ローテーション後に新規接続が全滅する（2026-07-02）。
 
 ### プロジェクト固有設定（`.claude-container.d/`）
 
-利用側プロジェクトの claude-container 向け設定は `.claude-container.d/` ディレクトリに一本化されており、中身は読み込みタイミングが異なる2種類に分かれる。
-
-**ビルド時焼き込み設定**: `.claude-container.d/packages.txt`・`requirements.txt`・`allowed-domains.txt`。存在する場合、ビルドコンテキストのステージング時に claude-container 同梱のデフォルトを上書きする。ファイルが無ければ claude-container 同梱の汎用（空の）デフォルトにフォールバックし、`stage_build_context()` は無いファイルごとに `WARNING:` 行を出力してフォールバックが無言にならないようにする — 以前は claude-container 自身の `packages.txt` に焼き込まれたパッケージに依存していたプロジェクト（2026-07-01 のプロジェクト非依存化リファクタでプロジェクト固有エントリが外出しされる前）は、そうでないと理由も分からずリビルド時にパッケージを失っていた（実インシデント: findsummits の `gcc`/`python3`/`make` がこうして消失した — 上記の `PROJECT_NAME` 衝突とは別の 2026-07-02 の事案）。`allowed-domains.txt` にはエグレスファイアウォールが許可すべき追加ドメイン（例: `pypi.org`）を列挙する。イメージにビルド時に焼き込まれるため、変更を反映するには `-b` でのリビルドが必要。
-
-**ランタイム設定**: `.claude-container.d/env`（`KEY=VALUE` 形式）。上記「環境変数」節の読み込み対象そのもので、起動のたび毎回読み込まれビルド時には一切参照されない。
-
-イメージ名は `localhost/<PROJECT_NAME>_claude-auth-workspace`（`PROJECT_NAME` の算出方法は上記 `claude-container` の項目を参照）。`-b` を渡さずイメージが既に存在する場合、Compose はビルドステップ（およびステージングステップ）を丸ごとスキップする。
-
-**秘密情報は `.claude-container.d/`（`env` を含む）にも通さない。** `packages.txt`/`requirements.txt`/`allowed-domains.txt`/`node-version.txt` はビルド時にイメージへ焼き込まれる（秘密情報は禁止 — ビルドコンテキストは秘密の保管場所ではない、後述の「残存リスク」参照）。`env`（`.claude-container.d/env`）はターゲットプロジェクトがコミットすることを前提とするランタイムファイルなので、秘密でない設定（パス・フラグ等）専用 — 秘密の値を直接書き込んだ場合（例: `GH_TOKEN=...`）、そのままではコンテナに渡らないため `claude-container` が警告で検知する。秘密情報の唯一の正規の置き場所は、パスで参照する独立したホスト側ファイル（例: `GH_TOKEN_FILE`、README.md「利用側プロジェクトの設定」参照）である: `compose.yml` がこれを読み取り専用でマウントし、`environment:` ではなく `entrypoint.sh` が読み込んで export するため、`podman inspect` の出力には一切現れない。
+ビルド時焼き込み設定（`packages.txt`/`requirements.txt`/`allowed-domains.txt`/`node-version.txt`）とランタイム設定（`env`）の区別、フォールバック時のWARNING設計は README.md「利用側プロジェクトの設定」節を参照。秘密情報は `.claude-container.d/`（`env` を含む）にも通さない — 唯一の正規の置き場所はパス参照の独立ホスト側ファイル（例: `GH_TOKEN_FILE`、README.md「利用側プロジェクトの設定」参照）。
 
 ## イメージの変更
 
@@ -158,26 +148,20 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 
 ### 計画ファイル・handover の扱い
 
-- **plan ファイルの置き場・命名規則**: `.claude/plans/<slug>.md` とする。`.claude/settings.json` の `plansDirectory: ".claude/plans"` により、Plan Mode の plan ファイルは最初からこのリポジトリ内に生成されるため、**承認後の `mv` は不要**。万一 plan ファイルが `~/.claude/plans/`（ホーム配下・グローバル）に生成された場合は `plansDirectory` 設定が効いていないサインなので、異常として報告した上で `mv` で `.claude/plans/<slug>.md` へ移動する。セッションごとに `<slug>` が異なるため、複数セッションが同時に Plan Mode を使っても plan ファイルが衝突しない。承認に至らず放棄された下書きが `.claude/plans/` に未追跡ファイルとして残っていたら、気づいた時点で削除してよい。
-- **plan ファイル内のファイル参照はコード表記にする**: `.claude/plans/<slug>.md` 内でリポジトリ内ファイルを参照するときは、Markdown リンクではなく**コード表記（バッククォート）**で書く。plan ファイルの位置からの相対リンクは閲覧環境によって解決されず broken-link になるため、リンクにしないことで構造的に回避する。
-- **計画の各タスクに実行モデルを明記する**: グローバル CLAUDE.md「モデルを使い分ける」節参照。
-- **handover ファイル名の日時**: ファイル名に使う日時は必ず `date '+%Y-%m-%d_%H%M'` コマンドで実時刻を取得すること。会話履歴や記憶から日付を推測してはならない（同日別セッションとの衝突を防ぐため）。
-- **plan ファイルの完了時の扱い**: 計画の実装が完了し区切りがついたら `.claude/plans/<slug>.md` を `git rm` で削除しコミットする（役目を終えた計画は残さない。履歴は git で追える）。ただし作業が中断・持ち越しになり handover を書いて次セッションへ引き継ぐ場合は削除せず残す。次セッションは `<slug>` を含むファイル名とタイムスタンプで対象を特定して再開する。
+- **plan ファイルは `.claude/plans/<slug>.md`**（`plansDirectory`設定により自動生成、承認後の`mv`は不要）。万一 `~/.claude/plans/` に生成されたら設定が効いていない異常のサインなので報告した上で`mv`する。放棄された未追跡下書きは気づいた時点で削除してよい
+- **plan ファイル内のリポジトリ内ファイル参照はコード表記（バッククォート）にする**: 相対リンクは閲覧環境で解決されず broken-link になるため
+- **計画の各タスクに実行モデルを明記する**: グローバル CLAUDE.md「モデルを使い分ける」節参照
+- **handover ファイル名の日時は `date '+%Y-%m-%d_%H%M'` で取得する**（記憶・推測禁止、セッション衝突防止）
+- **plan完了時は `git rm` で削除**（履歴はgitで追える）。中断・持ち越しの場合は削除せず handover で次セッションへ引き継ぐ
 
 ### バージョン管理（SemVer タグ運用）
 
-判定基準・タグ形式は README.md「バージョニング」節を参照。Claude セッションでの運用は以下のとおり。
+判定基準・タグ形式は README.md「バージョニング」節を参照。
 
-- **提案のトリガー**: 利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら（複数コミットにまたがる機能は完了時に1タグ）、Claude は SemVer 判定に基づく番号案と根拠を添えてタグ付与を**提案**する。付与するかの最終判断はユーザーが行う（提案なしに自動でタグを作成しない）。内部品質・docs・hook 調整のみの変更では提案しない
-- **タグ作成**: 承認されたら annotated tag をリリース対象コミットに付与する: `git tag -a vX.Y.Z -m "<メッセージ>"`
-- **タグメッセージのフォーマット**: 見出し1行＋空行＋箇条書き（`- `始まり）が基本形。GitHub は annotated tag があれば Release を明示的に作成しなくても `https://github.com/<owner>/<repo>/releases/tag/<tag>` にこのメッセージをそのまま表示する（`/tags` 一覧ページ自体には出ない）ため、これが唯一の変更概要になる（下記「GitHub Releases・CHANGELOG は作成しない」参照）
-  - 箇条書きで具体的な変更点・利用者への影響を列挙する
-  - ビルド時焼き込み設定・イメージ内容の変更を伴う場合は箇条書きの最後にリビルド要否を明記する（例: 「リビルド必須」「リビルド不要（スクリプト・ドキュメントのみの変更）」）
-  - 破壊的変更は該当する箇条書き行で明示する
-  - 単発コミットで内容が単純な場合は見出し1行のみでもよい
-- **push はユーザーがホスト側で実行**: コンテナ内の PAT は Issues 限定スコープのため push 不可（仕様）。Claude はタグ作成後、ホスト側で実行する `git push origin vX.Y.Z` コマンドを提示して依頼する
-- **GitHub Releases・CHANGELOG は作成しない**: annotated tag のメッセージが変更概要を兼ねる
-- **既存タグメッセージの書き換え**: 過去タグを書き直す場合も、タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認する）タグオブジェクトのみ再作成する。push は他のタグ作成と同じくユーザーがホスト側で実行する制約に従う
+- **提案のトリガー**: 利用者から見えるインターフェース（CLI引数・`.claude-container.d/`の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer判定に基づく番号案と根拠を添えてタグ付与を**提案**する（ユーザー承認後に作成、自動作成しない）。内部品質・docs・hook調整のみでは提案しない
+- **タグメッセージ**: 見出し1行＋空行＋箇条書きが基本形。annotated tagがあれば `https://github.com/<owner>/<repo>/releases/tag/<tag>` にそのまま表示される（唯一の変更概要。GitHub Releases・CHANGELOGは作成しない）。ビルド時焼き込み設定・イメージ内容の変更を伴う場合はリビルド要否を明記する
+- **push はユーザーがホスト側で実行**: コンテナ内PATはIssues限定スコープのためpush不可。タグ作成後、`git push origin vX.Y.Z` をホスト側実行コマンドとして提示する
+- **既存タグメッセージの書き換え**: タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認）タグオブジェクトのみ再作成する。pushは同じくユーザーがホスト側で実行
 
 ### ルールと制約
-- **Git**：Conventional Commits形式を使用。本文は日本語で記述（例: `feat: ユーザー認証にOAuth2を追加`）。確認なしに自動コミット・自動pushはしない。
+- **Git**：確認なしに自動コミット・自動pushはしない（形式はグローバル CLAUDE.md 参照）。
