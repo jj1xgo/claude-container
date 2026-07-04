@@ -30,8 +30,23 @@ RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
 # own packages.txt can't silently drop it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      curl git gh jq fzf unzip procps tzdata \
+      curl git jq fzf unzip procps tzdata \
       iptables bind9-dnsutils iproute2 sudo tini && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install gh from GitHub's official apt repository instead of Debian's. Debian
+# trixie ships gh 2.46.0, 46 releases behind upstream, which has a known-broken
+# `gh pr view`/PR command regression across all repos (Debian bug #1119130,
+# severity: serious) caused by the Projects (classic) API removal; issue
+# commands are unaffected. Build-time network is unrestricted (see CLAUDE.md
+# residual risks), so fetching the signing key and repo metadata here never
+# touches the runtime egress allowlist.
+RUN mkdir -p -m 755 /etc/apt/keyrings && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install project-specific apt packages
