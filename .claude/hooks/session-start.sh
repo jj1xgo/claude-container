@@ -22,14 +22,27 @@ H=$(ls -t "$ROOT"/.claude/handovers/*.md 2>/dev/null | head -1)
 # 最新1件のみを見る旧方式は、複数件の未解決が蓄積すると検知漏れになるため全件走査に変更。
 # フェイルセーフ設計: 「解決済」を明示検出できた場合のみ非警告とする（fail-closed）。
 # 状態行の欠落・表記ゆれ・見出し形式など未知フォーマットは全て警告側に倒し、見逃しを構造的に防ぐ。
+# glob は known-patterns.md 等の非インシデントファイル（YYYY-MM-DD形式のファイル名でない）を
+# 誤って「状態行なし＝未解決」と検知しないよう [0-9]*.md に限定する。
 UNRESOLVED_LIST=""
 UNRESOLVED_COUNT=0
-for f in "$ROOT"/.claude/incidents/*.md; do
+# 状態表明の複数併存を検知する hygiene 警告用。見出し形式（### 状態: 等）も拾う広域正規表現で、
+# 未解決判定（狭域・bullet形式のみ）とは別に集計する。2件以上ヒットしたファイルは表記の曖昧さが
+# あるとみなし、次セッションへ引き継ぐ前に是正を促す（ブロックはしない）。
+MULTI_STATUS_LIST=""
+MULTI_STATUS_COUNT=0
+for f in "$ROOT"/.claude/incidents/[0-9]*.md; do
   [ -e "$f" ] || continue
   LAST_STATUS=$(grep -E '^\s*[-*]?\s*\*{0,2}状態\*{0,2}\s*[:：]' "$f" 2>/dev/null | tail -1)
   if ! echo "$LAST_STATUS" | grep -qE '\*{0,2}解決済'; then
     UNRESOLVED_COUNT=$((UNRESOLVED_COUNT + 1))
     UNRESOLVED_LIST="${UNRESOLVED_LIST}  - ${f##*/}
+"
+  fi
+  STATUS_LINE_COUNT=$(grep -cE '^\s*[-*#]*\s*\*{0,2}状態\*{0,2}\s*[:：]' "$f" 2>/dev/null)
+  if [ "$STATUS_LINE_COUNT" -gt 1 ]; then
+    MULTI_STATUS_COUNT=$((MULTI_STATUS_COUNT + 1))
+    MULTI_STATUS_LIST="${MULTI_STATUS_LIST}  - ${f##*/}（${STATUS_LINE_COUNT}件）
 "
   fi
 done
@@ -167,6 +180,13 @@ if [ "$UNRESOLVED_COUNT" -gt 0 ]; then
   printf '%s' "$UNRESOLVED_LIST"
   echo '⚠️ 【環境確認チェックリスト実行指示】未解決インシデントがあります。'
   echo 'ユーザーへの最初の返答前に /log-incident の「次セッションでの環境確認チェックリスト」（項目1〜4）を実行し、結果を報告すること。'
+fi
+
+if [ "$MULTI_STATUS_COUNT" -gt 0 ]; then
+  echo ''
+  echo "⚠️ 状態表明が複数箇所にあるインシデント: ${MULTI_STATUS_COUNT}件"
+  printf '%s' "$MULTI_STATUS_LIST"
+  echo '同一ファイル内で状態を示す行が複数表記（bullet形式と見出し形式の併存等）になっており曖昧です。/log-incident の状態行ルールに従い是正することを推奨します（ブロックはしません）。'
 fi
 
 if [ -n "$INCIDENT_IN_HANDOVER" ]; then
