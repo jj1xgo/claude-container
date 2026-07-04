@@ -21,7 +21,7 @@
 | [**handovers/**](#handovers) | 存在しない | セッション引き継ぎノート（このプロジェクト配下・git 管理外） |
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
 | [**best_practices.md**](#best_practicesmdbest_practices_watermark) | 存在しない | `/update-best-practices` が lessons.md から再合成する原則集（`.claude/` 直下・git 管理対象） |
-| [**plan-\*.md・todo.md**](#plan-mdtodomd) | 存在しない | plan承認後の運用ファイル（`.claude/` 直下・git 管理対象） |
+| [**plan-\*.md**](#plan-md) | 存在しない | plan承認後の運用ファイル（`.claude/` 直下・git 管理対象）。課題管理は GitHub Issues（ルート CLAUDE.md 参照） |
 
 ---
 
@@ -50,6 +50,9 @@
 - `.claude/lessons.md` の増加件数を `.claude/best_practices_watermark` と比較し、閾値（10件）超過で
   初回返答時に `AskUserQuestion` による `/update-best-practices` 実行可否確認を Claude へ指示
   （stdout はユーザー画面に非表示の Claude 専用 context のため、「推奨」表示のみだと見落とされうる）
+- 本リポジトリ宛の open issue（課題トラッカー・利用側プロジェクトからの受付。ルート CLAUDE.md
+  「タスク管理の流れ（GitHub Issues）」参照）を `gh` で自動確認し注入する（フェイルソフト。
+  `gh` 不在・API 失敗時は一行メッセージのみでスキップ）
 - 出力が大きくなるとツール出力プレビューの切り詰め（先頭数KBのみ表示）で後半のアクション指示が
   見落とされる事故が実際に発生したため（2026-07-04）、全判定を先に実行し冒頭に必須アクション件数の
   ダイジェストを出す2パス構成にし、末尾に終端マーカー（`<<<END OF SESSION-START HOOK>>>`）を付与して
@@ -112,17 +115,16 @@ permissions.allow は未定義。
 `best_practices_watermark` は前回合成時点の lessons.md 件数を記録し、`hooks/session-start.sh` が増加量の
 閾値判定に使う。いずれも git 管理対象（`lessons.md` と異なり除外しない）。
 
-### plan-\*.md・todo.md
+### plan-\*.md
 
-Plan Mode で承認された計画（`.claude/plan-<slug>.md`）と、Plan Mode を伴わない軽微な実装タスクの管理リスト
-（`.claude/todo.md`）。ともに `.claude/` 直下に置かれている。
+Plan Mode で承認された計画（`.claude/plan-<slug>.md`）の保存先。`.claude/` 直下・git 管理対象。
+`/plan` コマンドがシステムの都合で `~/.claude/plans/<slug>.md`（ホーム配下・グローバル）に自動生成するため、
+`ExitPlanMode` 承認後に同じ `<slug>` を使って `mv` で `.claude/plan-<slug>.md` へ移動する。
+作業完了時は `git rm` で削除しコミット、中断・持ち越し時は残す
+（リポジトリルート [CLAUDE.md](../CLAUDE.md)「計画ファイル・handover の扱い」参照）。
 
-| ファイル | 役割 |
-|---|---|
-| `plan-<slug>.md` | Plan Mode で承認された計画の保存先。`/plan` コマンドがシステムの都合で `~/.claude/plans/<slug>.md`（ホーム配下・グローバル）に自動生成するため、`ExitPlanMode` 承認後に同じ `<slug>` を使って `mv` で `.claude/plan-<slug>.md` へ移動する。作業完了時は `git rm` で削除しコミット、中断・持ち越し時は残す（リポジトリルート [CLAUDE.md](../CLAUDE.md)「計画ファイル・handover の扱い」参照） |
-| `todo.md` | Plan Mode を伴わない軽微な実装タスクの管理リスト。完了した項目は消す（履歴は git で追える） |
-
-いずれも git 管理対象。
+軽微タスクの管理リストとして使っていた `.claude/todo.md` は 2026-07-04 に廃止し、課題管理は
+GitHub Issues へ移行した（リポジトリルート [CLAUDE.md](../CLAUDE.md)「タスク管理の流れ（GitHub Issues）」参照）。
 
 ---
 
