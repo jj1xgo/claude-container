@@ -200,6 +200,16 @@ stage_build_context() {
     fi
   done
 
+  # node-version.txt は上記3ファイルとは別扱い: 新設の任意機能であり、移行元が
+  # 存在しない（= 無いのが正常な大多数のプロジェクト向けに WARNING を出すとノイズに
+  # なるだけ）ため、無ければ静かに空ファイルを生成する。既存3ファイルの WARNING
+  # 設計自体を見直すかどうかは別 issue で扱う。
+  if [[ -f "$PROJECT_CONF_DIR/node-version.txt" ]]; then
+    cp "$PROJECT_CONF_DIR/node-version.txt" "$BUILD_CONTEXT_DIR/node-version.txt"
+  else
+    : > "$BUILD_CONTEXT_DIR/node-version.txt"
+  fi
+
   # 防御的アサーション: env（ランタイム設定）が万一ビルドコンテキストに紛れ込んでいたら
   # 即座にビルドを止める。将来上記ループがワイルドカードコピーに書き換えられた場合の
   # リグレッション（ホスト固有パスのイメージ焼き込み）を防ぐための安全網。

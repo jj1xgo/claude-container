@@ -28,10 +28,14 @@ RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
 # in "Stopping". tini cannot fix a kernel-side wedge, but keeps reaping and
 # `podman stop` working. Kept here rather than in packages.txt so a project's
 # own packages.txt can't silently drop it.
+#
+# xz-utils: for extracting the optional Node.js tarball (see node-version.txt
+# below). Kept in this fixed layer rather than packages.txt for the same
+# reason as tini — a project's own packages.txt can't silently drop it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git jq fzf unzip procps tzdata \
-      iptables bind9-dnsutils iproute2 sudo tini && \
+      iptables bind9-dnsutils iproute2 sudo tini xz-utils && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install gh from GitHub's official apt repository instead of Debian's. Debian
@@ -67,6 +71,35 @@ RUN if grep -qE '^[[:space:]]*[^#[:space:]]' /tmp/requirements.txt; then \
         echo "Add python3-pip to .claude-container.d/packages.txt." >&2; \
         exit 1; }; \
       pip3 install -r /tmp/requirements.txt --break-system-packages; \
+    fi
+
+# Install a specific Node.js version from the official nodejs.org tarball when
+# .claude-container.d/node-version.txt specifies one (e.g. "22.14.0"). apt on
+# debian:stable has no path to Node 22.x (trixie ships 20.x, testing skips
+# straight to 24.x), so projects needing 22.x declare just the bare version
+# number here instead of a general-purpose build hook (see claude-container#3
+# for the design rationale). Verifies the download against nodejs.org's own
+# SHASUMS256.txt before extracting — fails the build (not silently) on any
+# mismatch or network failure. Architecture is auto-detected (uname -m) since
+# the build host may be x86_64 or arm64 (e.g. podman machine on Apple Silicon).
+COPY node-version.txt /tmp/node-version.txt
+RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
+    if [ -n "$NODE_VERSION" ]; then \
+      echo "$NODE_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
+        echo "ERROR: .claude-container.d/node-version.txt must contain a bare version like 22.14.0 (got: $NODE_VERSION)" >&2; exit 1; }; \
+      case "$(uname -m)" in \
+        x86_64) NODE_ARCH=x64 ;; \
+        aarch64) NODE_ARCH=arm64 ;; \
+        *) echo "ERROR: unsupported architecture $(uname -m) for node-version.txt" >&2; exit 1 ;; \
+      esac; \
+      cd /tmp && \
+      curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" && \
+      curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" && \
+      grep " node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz\$" SHASUMS256.txt > node.sha256 && \
+      [ -s node.sha256 ] && \
+      sha256sum -c node.sha256 && \
+      tar -xJf "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -C /usr/local --strip-components=1 && \
+      rm -f "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt node.sha256; \
     fi
 
 ENV DEVCONTAINER=true
