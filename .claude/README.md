@@ -22,6 +22,7 @@
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
 | [**best_practices.md**](#best_practicesmdbest_practices_watermark) | 存在しない | `/update-best-practices` が lessons.md から再合成する原則集（`.claude/` 直下・git 管理対象） |
 | [**plans/**](#plans) | `~/.claude/plans/`（本プロジェクトでは不使用） | Plan Mode の plan ファイル生成先（`plansDirectory` 設定・git 管理対象）。課題管理は GitHub Issues（ルート CLAUDE.md 参照） |
+| [**filed-issues.txt**](#filed-issuestxt) | 存在しない | 他リポジトリへ起票した issue の追跡台帳（`.claude/` 直下・git 管理対象） |
 
 ---
 
@@ -52,7 +53,11 @@
   （stdout はユーザー画面に非表示の Claude 専用 context のため、「推奨」表示のみだと見落とされうる）
 - 本リポジトリ宛の open issue（課題トラッカー・利用側プロジェクトからの受付。ルート CLAUDE.md
   「タスク管理の流れ（GitHub Issues）」参照）を `gh` で自動確認し注入する（フェイルソフト。
-  `gh` 不在・API 失敗時は一行メッセージのみでスキップ）
+  `gh` 不在・API 失敗時は一行メッセージのみでスキップ）。`jq` が使えれば各 issue に最終コメントの
+  最終非空行（署名行想定）も添える。コンテナ内 gh が `comments` フィールド未対応の場合は
+  comments 無しの従来クエリへ自動フォールバックする
+- `.claude/filed-issues.txt`（他リポジトリへ起票した issue の追跡台帳）のエントリごとに
+  `gh issue view` で状態・最終コメントを確認し注入する（同じくフェイルソフト・上限10件）
 - 出力が大きくなるとツール出力プレビューの切り詰め（先頭数KBのみ表示）で後半のアクション指示が
   見落とされる事故が実際に発生したため（2026-07-04）、全判定を先に実行し冒頭に必須アクション件数の
   ダイジェストを出す2パス構成にし、末尾に終端マーカー（`<<<END OF SESSION-START HOOK>>>`）を付与して
@@ -128,6 +133,13 @@ Plan Mode の plan ファイル（`.claude/plans/<slug>.md`）の生成先。git
 
 軽微タスクの管理リストとして使っていた `.claude/todo.md` は 2026-07-04 に廃止し、課題管理は
 GitHub Issues へ移行した（リポジトリルート [CLAUDE.md](../CLAUDE.md)「タスク管理の流れ（GitHub Issues）」参照）。
+
+### filed-issues.txt
+
+他リポジトリ（findsummits・sotlas-frontend 等）へ起票した issue の追跡台帳。1行1エントリ、
+`owner/repo#番号` 形式。`hooks/session-start.sh` がエントリごとに状態・最終コメントを自動確認し注入する。
+起票時に追記、クローズ確認後に該当行を削除する（リポジトリルート [CLAUDE.md](../CLAUDE.md)
+「タスク管理の流れ（GitHub Issues）」参照）。git 管理対象。
 
 ---
 
