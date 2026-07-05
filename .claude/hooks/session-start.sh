@@ -26,9 +26,10 @@ H=$(ls -t "$ROOT"/.claude/handovers/*.md 2>/dev/null | head -1)
 # 誤って「状態行なし＝未解決」と検知しないよう [0-9]*.md に限定する。
 UNRESOLVED_LIST=""
 UNRESOLVED_COUNT=0
-# 状態表明の複数併存を検知する hygiene 警告用。見出し形式（### 状態: 等）も拾う広域正規表現で、
-# 未解決判定（狭域・bullet形式のみ）とは別に集計する。2件以上ヒットしたファイルは表記の曖昧さが
-# あるとみなし、次セッションへ引き継ぐ前に是正を促す（ブロックはしない）。
+# 状態表明の表記ゆれ（見出し形式 ### 状態: と bullet 形式 - 状態: の併存等）を検知する hygiene
+# 警告用。/log-incident のルールは「進展のたびに - 状態: ... を末尾追記する」複数行運用を正式に
+# 許容しているため、bullet 形式のみで統一された複数行は警告対象外とする。広域正規表現（見出し形式も
+# 拾う）とbullet限定正規表現のヒット数を比較し、両者が食い違う場合のみ表記ゆれとみなす。
 MULTI_STATUS_LIST=""
 MULTI_STATUS_COUNT=0
 for f in "$ROOT"/.claude/incidents/[0-9]*.md; do
@@ -40,9 +41,10 @@ for f in "$ROOT"/.claude/incidents/[0-9]*.md; do
 "
   fi
   STATUS_LINE_COUNT=$(grep -cE '^\s*[-*#]*\s*\*{0,2}状態\*{0,2}\s*[:：]' "$f" 2>/dev/null)
-  if [ "$STATUS_LINE_COUNT" -gt 1 ]; then
+  BULLET_STATUS_COUNT=$(grep -cE '^\s*-\s*\*{0,2}状態\*{0,2}\s*[:：]' "$f" 2>/dev/null)
+  if [ "$STATUS_LINE_COUNT" -ne "$BULLET_STATUS_COUNT" ]; then
     MULTI_STATUS_COUNT=$((MULTI_STATUS_COUNT + 1))
-    MULTI_STATUS_LIST="${MULTI_STATUS_LIST}  - ${f##*/}（${STATUS_LINE_COUNT}件）
+    MULTI_STATUS_LIST="${MULTI_STATUS_LIST}  - ${f##*/}（bullet形式${BULLET_STATUS_COUNT}件・非bullet形式込み${STATUS_LINE_COUNT}件）
 "
   fi
 done
