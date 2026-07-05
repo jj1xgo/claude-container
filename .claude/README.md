@@ -12,8 +12,8 @@
 | 要素 | グローバル `~/.claude/` | このプロジェクト `.claude/` |
 |---|---|---|
 | [**CLAUDE.md**](#claudemd-の位置) | 全プロジェクト共通ガイドライン | リポジトリルートに配置 |
-| **settings.json** | 基盤設定一式 | `skipDangerousModePermissionPrompt: true` + `plansDirectory: ".claude/plans"` + SessionStart / PostToolUse hook 登録 |
-| **settings.local.json** | 存在しない | 存在しない（プロジェクト固有 permissions 未定義） |
+| **settings.json** | 基盤設定一式 | `plansDirectory: ".claude/plans"` + SessionStart / PostToolUse hook 登録 |
+| **settings.local.json** | 存在しない | プロジェクト固有 permissions.allow（git 管理外、`.gitignore` 対象） |
 | **commands/** | 汎用 skill（handover / log-incident / claude-md-panel / update-best-practices） | 存在しない（ドメイン固有 skill なし） |
 | **rules/** | 存在しない | 存在しない |
 | **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨）+ [`lint-posttool.sh`](#hooks)（PostToolUse hook。bash スクリプト編集時の shellcheck 自動実行） |
@@ -75,7 +75,6 @@ PreToolUse hook は未定義。
 
 ```json
 {
-  "skipDangerousModePermissionPrompt": true,
   "plansDirectory": ".claude/plans",
   "hooks": {
     "PostToolUse": [
@@ -98,7 +97,17 @@ PreToolUse hook は未定義。
 }
 ```
 
-permissions.allow は未定義。
+`skipDangerousModePermissionPrompt` は未設定（コンテナ内 `--dangerously-skip-permissions` 実行前提の
+利用側プロジェクト向けの設定であり、claude-container 自体の開発はホスト上で直接 Claude を動かすため、
+ここでは意味を持たない。2026-07-05 に許可設定の見直しに伴い削除）。
+
+### settings.local.json
+
+`.gitignore` 対象（git 管理外）。読み取り・実行系コマンドの都度確認を減らすためのプロジェクト固有
+permissions.allow を保持する。境界設計の方針: ホスト直接実行では allowlist 自体が唯一の防壁になるため、
+書き込み・実行・外部API操作（`gh` の書き込み系コマンド、`podman run` の生実行等）はワイルドカードで
+許可せず都度確認に委ね、ワイルドカード許可は読み取り確定の粒度（`podman ps *`・`gh repo view *` 等）や
+固定引数のスクリプト実行（`./test-build.sh *`・`./lint.sh *`）に限定する。
 
 ### incidents/
 
