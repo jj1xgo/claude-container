@@ -173,6 +173,19 @@ if [[ -n "${GH_TOKEN_FILE:-}" ]]; then
   fi
 fi
 
+# ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）。任意設定のため未設定時は何もしない。
+# 設定済みでファイルが無い場合のみ起動を中止する（不存在パスを bind mount すると podman が
+# ホスト側に空ディレクトリを誤作成し、コンテナ内 ~/.gitconfig もディレクトリになって
+# git が壊れるため）。
+if [[ -n "${GITCONFIG_FILE:-}" ]]; then
+  GITCONFIG_FILE="${GITCONFIG_FILE/#\~\//$HOME/}"
+  export GITCONFIG_FILE
+  if [[ ! -f "$GITCONFIG_FILE" ]]; then
+    echo "ERROR: GITCONFIG_FILE=$GITCONFIG_FILE が見つかりません(存在しないか通常ファイルではありません)。起動を中止します。" >&2
+    exit 1
+  fi
+fi
+
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
 # プロジェクト側の .claude-container.d/ にあればそちらを、

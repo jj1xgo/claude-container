@@ -41,5 +41,10 @@ services:
       # entrypoint.sh がこのファイルを読んで export する。environment: に直接書かない
       # 理由は entrypoint.sh 側のコメント参照（podman inspect にトークンを出さないため）。
       - ${GH_TOKEN_FILE:-/dev/null}:/home/node/.config/claude-container/gh-token:ro
+      # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
+      # 未設定時は /dev/null をマウント（GH_TOKEN_FILE と同じオプトインパターン）。
+      # :ro 必須 — コンテナ内から credential.helper 等を書き換えられるとホスト側
+      # 任意コマンド実行につながるため。entrypoint.sh 側の処理は不要（git が直接読む）。
+      - ${GITCONFIG_FILE:-/dev/null}:/home/node/.gitconfig:ro
       - /etc/localtime:/etc/localtime:ro
     working_dir: /workspace
