@@ -105,6 +105,21 @@ if command -v gh >/dev/null 2>&1; then
   fi
 fi
 
+# プロジェクト外層（ホスト層/Anthropic層）の既知パターン台帳ダイジェスト（グローバル共有、フェイルソフト）
+# パターン見出し行＋再発ログ件数のみを注入する（全文は注入しない。コンテキスト浪費防止）。
+# ファイル不在時は黙ってスキップする。
+GLOBAL_LEDGER="$HOME/.claude/global-incidents/known-patterns.md"
+GLOBAL_LEDGER_DIGEST=""
+if [ -f "$GLOBAL_LEDGER" ]; then
+  GLOBAL_LEDGER_DIGEST=$(awk '
+    /^## パターン/{ if (name!="") printf "  - %s（再発ログ%d件）\n", name, count; name=$0; sub(/^## /,"",name); count=0; insec=0; next }
+    /^### 再発ログ/{ insec=1; next }
+    /^##/{ insec=0 }
+    insec && /^- /{ count++ }
+    END{ if (name!="") printf "  - %s（再発ログ%d件）\n", name, count }
+  ' "$GLOBAL_LEDGER")
+fi
+
 # 外部リポジトリへ起票した issue の状態確認（.claude/filed-issues.txt、上限10件、フェイルソフト）
 # 起票先が固定でない claude-container 特有の追跡（findsummits/sotlas-frontend は起票先が
 # claude-container 固定のため、相手側 open issue を全件見る上記ブロックで足り本ファイルは不要）
@@ -209,6 +224,13 @@ echo ''
 
 echo '## .claude/lessons.md（未蒸留分のみ。全文が必要な場合は都度 Read）'
 awk -v n="$WATERMARK_COUNT" '/^- /{c++} c>n' "$ROOT"/.claude/lessons.md 2>/dev/null
+echo ''
+
+if [ -n "$GLOBAL_LEDGER_DIGEST" ]; then
+  echo '## プロジェクト外層 既知パターン台帳（~/.claude/global-incidents/known-patterns.md、ダイジェストのみ）'
+  printf '%s' "$GLOBAL_LEDGER_DIGEST"
+  echo 'ホスト層/Anthropic層由来と疑われる異常を検知したら、新規フルインシデントの前にこの台帳を確認すること（詳細は /log-incident 参照）。'
+fi
 echo '<<<END AUTO-INJECTED REFERENCE>>>'
 echo ''
 
