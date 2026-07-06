@@ -98,6 +98,7 @@ build_domain_list() {
     api.anthropic.com
     claude.ai
     console.anthropic.com
+    statsig.anthropic.com
     statsig.com
     sentry.io
   )
