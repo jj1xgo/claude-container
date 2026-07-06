@@ -98,7 +98,6 @@ build_domain_list() {
     api.anthropic.com
     claude.ai
     console.anthropic.com
-    statsig.anthropic.com
     statsig.com
     sentry.io
   )
@@ -113,16 +112,36 @@ build_domain_list() {
 # (fail-open at this layer) — callers decide what a nonzero return means:
 # full_init treats it as fatal (fail-closed startup gate), do_refresh logs
 # and retries next cycle (fail-open background touch-up).
+#
+# NXDOMAIN (the domain no longer exists at all, e.g. statsig.anthropic.com as
+# of 2026-07) is treated as a warning, not a failure, and distinct from a
+# transient failure (timeout/SERVFAIL/resolver unreachable, which still counts
+# as an error below): no ACCEPT rule is added for it either way, so the
+# security boundary is unchanged, but treating it as fatal here would
+# permanently wedge the fail-closed startup gate with no recovery short of
+# editing this script.
 refresh_domains() {
-  local generation="$1" had_errors=0 domain ips ip
+  local generation="$1" had_errors=0 domain ips ip dig_output
   local -a domains
   mapfile -t domains < <(build_domain_list)
   for domain in "${domains[@]}"; do
     echo "Resolving $domain..."
-    ips=$(dig +noall +answer +time=2 +tries=2 A "$domain" | awk '$4 == "A" {print $5}')
+    # +comments (on top of +answer) surfaces the header's "status:" line
+    # (NOERROR/NXDOMAIN/SERVFAIL/...) in the same single dig call, so NXDOMAIN
+    # can be told apart from a transient failure below without a second
+    # round-trip. `|| true`: dig itself can exit non-zero on transient
+    # failures (e.g. no server reachable) before we ever look at the answer;
+    # under `set -o pipefail` that would otherwise trip `set -e` and abort
+    # this whole script here, before the had_errors handling below runs.
+    dig_output=$(dig +noall +answer +comments +time=2 +tries=2 A "$domain" || true)
+    ips=$(printf '%s\n' "$dig_output" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
-      echo "WARNING: failed to resolve $domain this cycle (will retry next interval)" >&2
-      had_errors=1
+      if [[ "$dig_output" =~ status:\ NXDOMAIN ]]; then
+        echo "WARNING: $domain does not exist (NXDOMAIN) - skipping without failing startup (no ACCEPT rule is added either way)" >&2
+      else
+        echo "WARNING: failed to resolve $domain this cycle (will retry next interval)" >&2
+        had_errors=1
+      fi
       continue
     fi
     while read -r ip; do
