@@ -171,13 +171,13 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 ### バージョニング
 
-[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）のみで管理する（GitHub Releases・CHANGELOG は使わず、タグメッセージが変更概要を兼ねる）。番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
+[Semantic Versioning](https://semver.org/lang/ja/) に従い、リリースは annotated git タグ（`vX.Y.Z`）で管理し、タグごとに `gh release create <tag> --notes-from-tag` でタグメッセージをそのまま流用した GitHub Release を作成する（CHANGELOG ファイルは作らない）。番号は利用者から見えるインターフェース（CLI 引数・`.claude-container.d/` の設定形式・デフォルト挙動）を基準に判定する:
 
 - **MAJOR** — 後方互換性が壊れる変更（デフォルト挙動の変更、設定形式の削除・非互換化など、利用者が対応しないと従来どおり動かないもの）
 - **MINOR** — 後方互換な機能追加（既存の使い方はそのまま動く）
 - **PATCH** — 後方互換なバグ修正のみ
 
-バージョン履歴は `git tag -n1` または GitHub の Tags ページで参照できる。
+バージョン履歴は GitHub の [Releases ページ](https://github.com/jj1xgo/claude-container/releases)で一覧・購読できる（`git tag -n1` でも確認可能）。
 
 ### 参考
 
@@ -355,13 +355,13 @@ There is no test suite. After editing the script or Compose/Dockerfile, verify w
 
 ### Versioning
 
-Releases follow [Semantic Versioning](https://semver.org/) and are managed solely with annotated git tags (`vX.Y.Z`) — no GitHub Releases or CHANGELOG; the tag message doubles as the change summary. Version numbers are judged against the user-visible interface (CLI arguments, the `.claude-container.d/` configuration format, and default behavior):
+Releases follow [Semantic Versioning](https://semver.org/) and are managed with annotated git tags (`vX.Y.Z`); each tag gets a GitHub Release created with `gh release create <tag> --notes-from-tag`, reusing the tag message verbatim (no separate CHANGELOG file). Version numbers are judged against the user-visible interface (CLI arguments, the `.claude-container.d/` configuration format, and default behavior):
 
 - **MAJOR** — backward-incompatible changes (changed defaults, removed or incompatible configuration formats — anything that breaks existing usage until the user adapts)
 - **MINOR** — backward-compatible feature additions (existing usage keeps working)
 - **PATCH** — backward-compatible bug fixes only
 
-Browse the version history with `git tag -n1` or on the GitHub Tags page.
+Browse the version history on the [GitHub Releases page](https://github.com/jj1xgo/claude-container/releases) (list and subscribe), or with `git tag -n1`.
 
 ### References
 
