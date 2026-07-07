@@ -24,12 +24,29 @@
 
 各ファイルの役割・実装詳細は README.md の「アーキテクチャ」節を参照。以下はコード変更時に見落としやすい不変条件のみを列挙する。
 
-- **`claude-container`** — `compute_project_name()` による `PROJECT_NAME`（basename+sha256先頭8文字）でイメージ名・ビルドステージング先をプロジェクトごとに分離する構造を壊さない。固定パスに戻すと複数プロジェクト交互ビルドで無言の上書きが再発する（2026-07-02）。`-b` 時の build と run は別ステップのまま（fail-closed）。`stage_build_context()` の「`env` がステージング先に存在したら `exit 1`」防御的アサーションを削除しない（`env` はビルド時焼き込み禁止）。GitHub meta 取得はここ1箇所のみで行う（詳細は下記「GitHub meta スナップショット」参照）。ステージング時は `node-version.txt`（詳細は下記「Node.js 任意バージョン導入」参照）も対象に含める。
-- **`compose.yml`** — IPv6 無効化の `sysctls` と `init-firewall.sh` の `ip6tables` DROP は両方必要（片方だけでは glibc の Happy Eyeballs 経由の間欠停止を防げない、2026-07-02）。`userns_mode: keep-id`・`NET_ADMIN`/`NET_RAW` capability は維持する。
-- **`Dockerfile.claude`** — `ca-certificates` の HTTP→HTTPS 2段階インストール順序を変えない（debian:stable 未同梱のため。削除しないこと）。`tini` を PID1 に据える構成、および `packages.txt` でなく固定 apt-get レイヤーに置く配置を変えない（プロジェクト側上書きでの消失防止。関連インシデント: `.claude/incidents/2026-07-02_2252_crun-kill-failed-on-session-exit.md`）。`ARG CACHEBUST` はキャッシュ破棄用に `RUN` 内で実際に参照して初めて効く（宣言のみでは無効、2026-06-11）。GitHub meta の検証は下記「GitHub meta スナップショット」参照。
-- **`entrypoint.sh`** — ファイアウォール適用（fail-closed）→バックグラウンド更新ループ起動（詳細は下記「CDN IP ローテーション追従」参照）→`exec claude` の順序を変えない。PID1 は tini（`Dockerfile.claude` 項目参照）。
-- **`init-firewall.sh`** — ipset は使わない（rootless podman で `ip_set` カーネルモジュールを autoload できないため素の iptables で代替）。GitHub IP レンジはビルド時スナップショットの読み込みのみ、ランタイムでのライブ取得を追加しない（詳細は下記「GitHub meta スナップショット」参照）。ドメイン IP の追従は下記「CDN IP ローテーション追従」参照。`refresh_domains()` のNXDOMAIN判定（一時的な解決失敗とは区別し、恒久的にドメイン自体が存在しない場合のみ `had_errors` をセットしない）を壊さない — ハードコード済み許可ドメインが恒久的にNXDOMAIN化すると起動そのものがfail-closedで止まり続ける（`statsig.anthropic.com`、2026-07-06）。
-- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト（フォールバック値）。`node-version.txt` は同梱デフォルトを持たず WARNING も出さない（既存3ファイルとの非対称は既知、issue #7 で再検討中）。
+- **`claude-container`**
+  - `compute_project_name()` による `PROJECT_NAME`（basename+sha256先頭8文字）でイメージ名・ビルドステージング先をプロジェクトごとに分離する構造を壊さない。固定パスに戻すと複数プロジェクト交互ビルドで無言の上書きが再発する（2026-07-02）。
+  - `-b` 時の build と run は別ステップのまま（fail-closed）。
+  - `stage_build_context()` の「`env` がステージング先に存在したら `exit 1`」防御的アサーションを削除しない（`env` はビルド時焼き込み禁止）。
+  - GitHub meta 取得はここ1箇所のみで行う（詳細は下記「GitHub meta スナップショット」参照）。
+  - ステージング時は `node-version.txt`（詳細は下記「Node.js 任意バージョン導入」参照）も対象に含める。
+- **`compose.yml`**
+  - IPv6 無効化の `sysctls` と `init-firewall.sh` の `ip6tables` DROP は両方必要（片方だけでは glibc の Happy Eyeballs 経由の間欠停止を防げない、2026-07-02）。
+  - `userns_mode: keep-id`・`NET_ADMIN`/`NET_RAW` capability は維持する。
+- **`Dockerfile.claude`**
+  - `ca-certificates` の HTTP→HTTPS 2段階インストール順序を変えない（debian:stable 未同梱のため。削除しないこと）。
+  - `tini` を PID1 に据える構成、および `packages.txt` でなく固定 apt-get レイヤーに置く配置を変えない（プロジェクト側上書きでの消失防止。関連インシデント: `.claude/incidents/2026-07-02_2252_crun-kill-failed-on-session-exit.md`）。
+  - `ARG CACHEBUST` はキャッシュ破棄用に `RUN` 内で実際に参照して初めて効く（宣言のみでは無効、2026-06-11）。
+  - GitHub meta の検証は下記「GitHub meta スナップショット」参照。
+- **`entrypoint.sh`**
+  - ファイアウォール適用（fail-closed）→バックグラウンド更新ループ起動（詳細は下記「CDN IP ローテーション追従」参照）→`exec claude` の順序を変えない。
+  - PID1 は tini（`Dockerfile.claude` 項目参照）。
+- **`init-firewall.sh`**
+  - ipset は使わない（rootless podman で `ip_set` カーネルモジュールを autoload できないため素の iptables で代替）。
+  - GitHub IP レンジはビルド時スナップショットの読み込みのみ、ランタイムでのライブ取得を追加しない（詳細は下記「GitHub meta スナップショット」参照）。
+  - ドメイン IP の追従は下記「CDN IP ローテーション追従」参照。
+  - `refresh_domains()` のNXDOMAIN判定（一時的な解決失敗とは区別し、恒久的にドメイン自体が存在しない場合のみ `had_errors` をセットしない）を壊さない — ハードコード済み許可ドメインが恒久的にNXDOMAIN化すると起動そのものがfail-closedで止まり続ける（`statsig.anthropic.com`、2026-07-06）。
+- **`packages.txt`** / **`requirements.txt`** / **`allowed-domains.txt`** — claude-container 同梱のデフォルト（フォールバック値）。`node-version.txt` は同梱デフォルトを持たず WARNING も出さない（既存3ファイルとの非対称は既知。経緯は issue #7）。
 
 ### Node.js 任意バージョン導入（`node-version.txt`）
 
