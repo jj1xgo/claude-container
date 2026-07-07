@@ -2,8 +2,7 @@
 
 ## プロジェクト概要
 
-[findsummits](https://github.com/JJ1XGO/findsummits) プロジェクト向けの Claude Code サンドボックス環境。
-[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークし、findsummits の開発環境に合わせてカスタマイズしたもの。apt/pip パッケージや Node.js バージョン等の設定は `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
+[sethjensen1/claude-container](https://github.com/sethjensen1/claude-container)（MIT）をフォークした Claude Code サンドボックス環境。apt/pip パッケージや Node.js バージョン等の設定は `.claude-container.d/` で利用側プロジェクトごとに指定でき、本リポジトリ自体は特定プロジェクトに依存しない。
 
 ## 使い方
 

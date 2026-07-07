@@ -1,6 +1,6 @@
 # .claude/ カスタマイズ目録（このプロジェクト固有）
 
-このプロジェクト（claude-container: findsummits 向け Claude Code サンドボックス環境の管理リポジトリ）の
+このプロジェクト（claude-container: Claude Code サンドボックス環境の管理リポジトリ）の
 `.claude/` に配置した Claude Code カスタマイズの一覧です。
 
 グローバル共通設定との役割分担は `~/.claude/README.md` を参照してください。
