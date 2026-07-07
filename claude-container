@@ -155,7 +155,7 @@ if [[ -n "$ENV_FILE" ]] && grep -qE '^GH_TOKEN=' "$ENV_FILE"; then
   echo "WARNING: $ENV_FILE の GH_TOKEN=... はコンテナに渡されません。GH_TOKEN_FILE=<トークンを保存したファイルへの絶対パス> を使ってください。" >&2
 fi
 
-# GitHub Issues 書き込み用トークンのファイル参照（GH_TOKEN_FILE）。トークン本体は
+# GitHub 書き込み用トークン（プライマリ）のファイル参照（GH_TOKEN_FILE）。トークン本体は
 # ビルドコンテキストにもコミット対象のランタイム設定ファイルにも置かず、ホスト上の
 # 独立したファイルに置く運用を前提とする。ファイルが無ければ起動を中止する
 # （fail-closed。他の設定ミスと違い、意図した保護が効かないまま起動させないため）。
@@ -170,6 +170,22 @@ if [[ -n "${GH_TOKEN_FILE:-}" ]]; then
   gh_token_perm=$(stat -c '%a' "$GH_TOKEN_FILE" 2>/dev/null || stat -f '%Lp' "$GH_TOKEN_FILE" 2>/dev/null || echo "")
   if [[ -n "$gh_token_perm" && "$gh_token_perm" != "600" ]]; then
     echo "WARNING: GH_TOKEN_FILE=$GH_TOKEN_FILE のパーミッションが $gh_token_perm です。chmod 600 を推奨します。" >&2
+  fi
+fi
+
+# GitHub 書き込み用トークン（セカンダリ、クロスリポジトリ Issue 書き込み専用）のファイル参照
+# （GH_TOKEN_SECONDARY_FILE）。任意設定のため未設定時は何もしない。プライマリと異なり
+# entrypoint.sh は export しない（コンテナ内で `GH_TOKEN=$(cat …)` と明示指定する運用のため）。
+if [[ -n "${GH_TOKEN_SECONDARY_FILE:-}" ]]; then
+  GH_TOKEN_SECONDARY_FILE="${GH_TOKEN_SECONDARY_FILE/#\~\//$HOME/}"
+  export GH_TOKEN_SECONDARY_FILE
+  if [[ ! -f "$GH_TOKEN_SECONDARY_FILE" ]]; then
+    echo "ERROR: GH_TOKEN_SECONDARY_FILE=$GH_TOKEN_SECONDARY_FILE が見つかりません（存在しないか通常ファイルではありません）。起動を中止します。" >&2
+    exit 1
+  fi
+  gh_token_secondary_perm=$(stat -c '%a' "$GH_TOKEN_SECONDARY_FILE" 2>/dev/null || stat -f '%Lp' "$GH_TOKEN_SECONDARY_FILE" 2>/dev/null || echo "")
+  if [[ -n "$gh_token_secondary_perm" && "$gh_token_secondary_perm" != "600" ]]; then
+    echo "WARNING: GH_TOKEN_SECONDARY_FILE=$GH_TOKEN_SECONDARY_FILE のパーミッションが $gh_token_secondary_perm です。chmod 600 を推奨します。" >&2
   fi
 fi
 

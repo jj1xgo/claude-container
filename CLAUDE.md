@@ -46,7 +46,7 @@
 
 ### プロジェクト固有設定（`.claude-container.d/`）
 
-ビルド時焼き込み設定（`packages.txt`/`requirements.txt`/`allowed-domains.txt`/`node-version.txt`）とランタイム設定（`env`）の区別、フォールバック時のWARNING設計は README.md「利用側プロジェクトの設定」節を参照。秘密情報は `.claude-container.d/`（`env` を含む）にも通さない — 唯一の正規の置き場所はパス参照の独立ホスト側ファイル（例: `GH_TOKEN_FILE`、README.md「利用側プロジェクトの設定」参照）。
+ビルド時焼き込み設定（`packages.txt`/`requirements.txt`/`allowed-domains.txt`/`node-version.txt`）とランタイム設定（`env`）の区別、フォールバック時のWARNING設計は README.md「利用側プロジェクトの設定」節を参照。秘密情報は `.claude-container.d/`（`env` を含む）にも通さない — 唯一の正規の置き場所はパス参照の独立ホスト側ファイル（例: `GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`、README.md「利用側プロジェクトの設定」参照）。
 
 ## イメージの変更
 
@@ -65,7 +65,10 @@
 **残存リスク（許可リストでも防げないもの）:**
 
 - DNS トンネリング: リゾルバ宛 53 番は許可されるため、DNS クエリに載せた exfiltration は原理上可能
-- 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる。`GH_TOKEN_FILE`（README.md「利用側プロジェクトの設定」参照）を設定した場合はこのリスクが能動的になる: プロンプトインジェクションや悪意あるパッケージがトークンを読み取り、そのスコープ内で GitHub へ書き込める（対象リポジトリへの意図しない issue 作成・issue 本文経由の情報送信）。ファイアウォールは GitHub 自体を許可しているため防げず、緩和策は fine-grained PAT のスコープ最小化（Issues のみ・対象リポジトリ限定・短期限）のみ
+- 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる。`GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`（README.md「利用側プロジェクトの設定」参照）を設定した場合はこのリスクが能動的になる: プロンプトインジェクションや悪意あるパッケージがトークンを読み取り、そのスコープ内で GitHub へ書き込める。トークンは2本体制（プライマリ `claude-container-self`＝本リポジトリ限定で Issues + Pull requests RW + Contents Read、セカンダリ `issues-all`＝findsummits・sotlas-frontend 限定で Issues RW のみ）で、緩和策は各トークンの fine-grained PAT スコープ最小化（対象リポジトリ限定・短期限）
+  - **push/マージは今回もコンテナ内PATの権限外**: PRマージ（`Contents: write` が必要）は両トークンとも持たないため、悪用されても push・マージ・Release作成には至らない
+  - **Pull requests: write による攻撃対象面の拡大**: 他者PRのタイトル・本文改変、レビュー依頼スパム、妨害目的のクローズが可能になる。Issue操作と同種だが一段重い
+  - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。claude-container リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。対策として claude-container の auto-merge は無効を維持し、**コンテナ内で `gh pr review --approve` を自律実行しない**（push同様、人間の確認を経ずにマージ条件を満たす行為として扱う）
 - IP ローテーション: 許可ドメインの IP は約15秒間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
 - ビルド時ネットワークは無制限: `pip3 install` は setup.py / build backend の任意コードをビルド時に実行しうる。ただし build context に秘密情報は含まれず、イメージへ焼き込まれた悪性コードの実行時通信は上記 firewall が封じる
 
@@ -160,8 +163,8 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 
 - **提案のトリガー**: 利用者から見えるインターフェース（CLI引数・`.claude-container.d/`の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer判定に基づく番号案と根拠を添えてタグ付与を**提案**する（ユーザー承認後に作成、自動作成しない）。内部品質・docs・hook調整のみでは提案しない
 - **タグメッセージ**: 見出し1行＋空行＋箇条書きが基本形。CHANGELOGファイルは作成しない。ビルド時焼き込み設定・イメージ内容の変更を伴う場合はリビルド要否を明記する
-- **push はユーザーがホスト側で実行**: コンテナ内PATはIssues限定スコープのためpush不可。タグ作成後、`git push origin vX.Y.Z` をホスト側実行コマンドとして提示する
-- **GitHub Release作成**: push後に `gh release create <tag> --notes-from-tag --title <tag>` を実行し、タグメッセージをそのまま流用したGitHub Release（`https://github.com/<owner>/<repo>/releases/tag/<tag>` に表示、タイトル＝タグ名、本文＝タグメッセージそのもの）を作成する。コンテナ内PAT（Issues限定スコープ）では権限エラー（403）になる想定で、その場合はpushと同様にホスト側実行コマンドとして提示する。逆にコンテナ内で成功した場合は想定スコープとの乖離であり、黙って利用継続せずユーザーに報告する
+- **push はユーザーがホスト側で実行**: コンテナ内PAT（プライマリ `claude-container-self` を含む）は `Contents: Read` までで `Contents: write` を持たないためpush不可。タグ作成後、`git push origin vX.Y.Z` をホスト側実行コマンドとして提示する
+- **GitHub Release作成**: push後に `gh release create <tag> --notes-from-tag --title <tag>` を実行し、タグメッセージをそのまま流用したGitHub Release（`https://github.com/<owner>/<repo>/releases/tag/<tag>` に表示、タイトル＝タグ名、本文＝タグメッセージそのもの）を作成する。コンテナ内PATは `Contents: write` を持たないため権限エラー（403）になる想定で、その場合はpushと同様にホスト側実行コマンドとして提示する。逆にコンテナ内で成功した場合は想定スコープとの乖離であり、黙って利用継続せずユーザーに報告する
 - **既存タグメッセージの書き換え**: タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認）タグオブジェクトのみ再作成する。pushは同じくユーザーがホスト側で実行。対応するGitHub Releaseの notes も `gh release edit <tag> --notes-from-tag` で同期する（さもないとタグとReleaseの内容が乖離する）
 
 ### ルールと制約
