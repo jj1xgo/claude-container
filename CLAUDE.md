@@ -82,7 +82,7 @@
 
 - DNS トンネリング: リゾルバ宛 53 番は許可されるため、DNS クエリに載せた exfiltration は原理上可能
 - 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる。`GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`（README.md「利用側プロジェクトの設定」参照）を設定した場合はこのリスクが能動的になる: プロンプトインジェクションや悪意あるパッケージがトークンを読み取り、そのスコープ内で GitHub へ書き込める。トークンは2本体制（プライマリ `claude-container-self`＝本リポジトリ限定で Issues + Pull requests RW + Contents Read、セカンダリ `issues-all`＝findsummits・sotlas-frontend 限定で Issues RW のみ）で、緩和策は各トークンの fine-grained PAT スコープ最小化（対象リポジトリ限定・短期限）
-  - **push/マージは今回もコンテナ内PATの権限外**: PRマージ（`Contents: write` が必要）は両トークンとも持たないため、悪用されても push・マージ・Release作成には至らない
+  - **push/マージはコンテナ内PATの権限外**: PRマージ（`Contents: write` が必要）は両トークンとも持たないため、悪用されても push・マージ・Release作成には至らない
   - **Pull requests: write による攻撃対象面の拡大**: 他者PRのタイトル・本文改変、レビュー依頼スパム、妨害目的のクローズが可能になる。Issue操作と同種だが一段重い
   - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。claude-container リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。対策として claude-container の auto-merge は無効を維持し、**コンテナ内で `gh pr review --approve` を自律実行しない**（push同様、人間の確認を経ずにマージ条件を満たす行為として扱う）
 - IP ローテーション: 許可ドメインの IP は約15秒間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
@@ -94,7 +94,7 @@ Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移
 
 ## 変更後の確認
 
-テストスイートはない。`./lint.sh` が集約 lint target（`bash -n`・`shellcheck`・`podman compose config` を一括実行。詳細は README.md の「変更後の確認」節を参照）。対象の bash スクリプトはリポジトリ内ファイル（gitignore 対象を除く追跡済み・未追跡）の shebang から動的に検出するため、スクリプトを追加/削除しても対象リストの手動同期は不要（以前は README.md と CLAUDE.md の両方に `bash -n` の対象リストを手書きしており、ズレたことがある）。編集時は PostToolUse hook（`.claude/hooks/lint-posttool.sh`）が該当ファイルの shellcheck 違反を自動提示する。提示された違反はそのターン内で解消する。
+テストスイートはない。`./lint.sh` が集約 lint target（`bash -n`・`shellcheck`・`podman compose config` を一括実行。詳細は README.md の「変更後の確認」節を参照）。対象の bash スクリプトはリポジトリ内ファイル（gitignore 対象を除く追跡済み・未追跡）の shebang から動的に検出するため、スクリプトを追加/削除しても対象リストの手動同期は不要。編集時は PostToolUse hook（`.claude/hooks/lint-posttool.sh`）が該当ファイルの shellcheck 違反を自動提示する。提示された違反はそのターン内で解消する。
 
 ---
 
@@ -113,9 +113,7 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 指摘やフィードバックを受けたときは、`.claude/lessons.md` にそのポイントを簡潔に記録する。
 
 #### 4. バグ修正の対応
-バグ報告を受けたら、ログやエラー、失敗テストを確認した上で、できる限り自律的に修正する。
-必要最小限の変更に留め、ユーザーへの質問は最小限にする。
-一時しのぎの修正は避け、なぜそのバグが起きたかを理解した上で本質的な解決を目指す。
+バグ報告はログ・エラー・失敗テストを確認し、必要最小限の変更で自律的に修正する（質問は最小限に）。
 ただし Plan Mode 切り替え基準（コア原則 1）に該当する規模の場合は、自律修正より計画を優先する。
 
 ### セッション開始時のルーティン（必須）
@@ -141,8 +139,7 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 課題管理はグローバル CLAUDE.md「GitHub Issues による課題管理（opt-in）」のフローに従い、
 本リポジトリ（`jj1xgo/claude-container`）の GitHub Issues をトラッカーとして使う。本リポジトリ固有の事項:
 
-- 起票は `gh issue create` で行い、相応しいラベルを付与する
-- 実装前の計画確認・承認は従来どおり（Plan Mode 基準に該当する場合は `.claude/plans/<slug>.md`）
+- 起票は `gh issue create` で行い、相応しいラベル（下記「ラベル体系」＋グローバル共通ラベル）を付与する
 - クローズは `gh issue close` を正とする（コミットの `fixes #N` はユーザーの push 時点まで閉じないため使わない）
 - **他リポジトリ（findsummits・sotlas-frontend 等）へ起票したら**、`.claude/filed-issues.txt` に
   `owner/repo#番号` の形式で追記し同ターンでコミットする（session-start hook が状態・最終コメントを
@@ -169,7 +166,6 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 - **plan ファイルは `.claude/plans/<slug>.md`**（`plansDirectory`設定により自動生成、承認後の`mv`は不要）。万一 `~/.claude/plans/` に生成されたら設定が効いていない異常のサインなので報告した上で`mv`する。放棄された未追跡下書きは気づいた時点で削除してよい
 - **plan ファイル内のリポジトリ内ファイル参照はコード表記（バッククォート）にする**: 相対リンクは閲覧環境で解決されず broken-link になるため
 - **計画の各タスクに実行モデルを明記する**: グローバル CLAUDE.md「モデルを使い分ける」節参照
-- **handover ファイル名の日時は `date '+%Y-%m-%d_%H%M'` で取得する**（記憶・推測禁止、セッション衝突防止）
 - **plan完了時は `git rm` で削除**（履歴はgitで追える）。中断・持ち越しの場合は削除せず handover で次セッションへ引き継ぐ
 
 ### バージョン管理（SemVer タグ運用）
@@ -179,8 +175,8 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 - **提案のトリガー**: 利用者から見えるインターフェース（CLI引数・`.claude-container.d/`の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer判定に基づく番号案と根拠を添えてタグ付与を**提案**する（ユーザー承認後に作成、自動作成しない）。内部品質・docs・hook調整のみでは提案しない
 - **タグメッセージ**: 見出し1行＋空行＋箇条書きが基本形。CHANGELOGファイルは作成しない。ビルド時焼き込み設定・イメージ内容の変更を伴う場合はリビルド要否を明記する
 - **push はユーザーがホスト側で実行**: コンテナ内PAT（プライマリ `claude-container-self` を含む）は `Contents: Read` までで `Contents: write` を持たないためpush不可。タグ作成後、`git push origin vX.Y.Z` をホスト側実行コマンドとして提示する
-- **GitHub Release作成**: push後に `gh release create <tag> --notes-from-tag --title <tag>` を実行し、タグメッセージをそのまま流用したGitHub Release（`https://github.com/<owner>/<repo>/releases/tag/<tag>` に表示、タイトル＝タグ名、本文＝タグメッセージそのもの）を作成する。コンテナ内PATは `Contents: write` を持たないため権限エラー（403）になる想定で、その場合はpushと同様にホスト側実行コマンドとして提示する。逆にコンテナ内で成功した場合は想定スコープとの乖離であり、黙って利用継続せずユーザーに報告する
-- **既存タグメッセージの書き換え**: タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認）タグオブジェクトのみ再作成する。pushは同じくユーザーがホスト側で実行。対応するGitHub Releaseの notes も `gh release edit <tag> --notes-from-tag` で同期する（さもないとタグとReleaseの内容が乖離する）
+- **GitHub Release作成**: push後に `gh release create <tag> --notes-from-tag --title <tag>` を実行し、タグメッセージをそのまま流用したGitHub Release（タイトル＝タグ名、本文＝タグメッセージそのもの）を作成する。コンテナ内PATは `Contents: write` を持たないため権限エラー（403）になる想定で、その場合はpushと同様にホスト側実行コマンドとして提示する。逆にコンテナ内で成功した場合は想定スコープとの乖離であり、黙って利用継続せずユーザーに報告する
+- **既存タグメッセージの書き換え**: タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認）タグオブジェクトのみ再作成する。pushは同じくユーザーがホスト側で実行。対応するGitHub Releaseの notes も、タグ本文（`git tag -l --format='%(contents)' <tag>`）を一時ファイルへ書き出し `gh release edit <tag> --notes-file <file>` で同期する（`gh release edit` には `--notes-from-tag` が無い）。同期しないとタグとReleaseの内容が乖離する
 
 ### ルールと制約
 - **Git**：確認なしに自動コミット・自動pushはしない（形式はグローバル CLAUDE.md 参照）。
