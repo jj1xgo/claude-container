@@ -173,7 +173,7 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 判定基準・タグ形式は README.md「バージョニング」節を参照。
 
 - **提案のトリガー**: 利用者から見えるインターフェース（CLI引数・`.claude-container.d/`の設定形式・デフォルト挙動）が変わる一連の変更をコミットし終えたら、SemVer判定に基づく番号案と根拠を添えてタグ付与を**提案**する（ユーザー承認後に作成、自動作成しない）。内部品質・docs・hook調整のみでは提案しない
-- **タグメッセージ**: 見出し1行＋空行＋箇条書きが基本形。CHANGELOGファイルは作成しない。ビルド時焼き込み設定・イメージ内容の変更を伴う場合はリビルド要否を明記する
+- **タグメッセージ**: 見出し1行＋空行＋箇条書きが基本形。日本語ブロック→`---`→Englishブロックの順で日英併記する（README.md と異なり言語見出しは付けない）。CHANGELOGファイルは作成しない。ビルド時焼き込み設定・イメージ内容の変更を伴う場合はリビルド要否を明記する
 - **push はユーザーがホスト側で実行**: コンテナ内PAT（プライマリ `claude-container-self` を含む）は `Contents: Read` までで `Contents: write` を持たないためpush不可。タグ作成後、`git push origin vX.Y.Z` をホスト側実行コマンドとして提示する
 - **GitHub Release作成**: push後に `gh release create <tag> --notes-from-tag --title <tag>` を実行し、タグメッセージをそのまま流用したGitHub Release（タイトル＝タグ名、本文＝タグメッセージそのもの）を作成する。コンテナ内PATは `Contents: write` を持たないため権限エラー（403）になる想定で、その場合はpushと同様にホスト側実行コマンドとして提示する。逆にコンテナ内で成功した場合は想定スコープとの乖離であり、黙って利用継続せずユーザーに報告する
 - **既存タグメッセージの書き換え**: タグが指すコミット自体は変えず（`git rev-parse <tag>^{}` の一致を確認）タグオブジェクトのみ再作成する。pushは同じくユーザーがホスト側で実行。対応するGitHub Releaseの notes も、タグ本文（`git tag -l --format='%(contents)' <tag>`）を一時ファイルへ書き出し `gh release edit <tag> --notes-file <file>` で同期する（`gh release edit` には `--notes-from-tag` が無い）。同期しないとタグとReleaseの内容が乖離する
