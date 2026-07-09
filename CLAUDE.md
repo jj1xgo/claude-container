@@ -66,11 +66,11 @@
 
 ## イメージの変更
 
-リビルド手順、`CACHEBUST`/`CLAUDE_CODE_VERSION` の扱い、`DISABLE_AUTOUPDATER`、`.build-context/` のクリーンアップは README.md の「イメージの変更」節を参照。実装上のポインタ: GitHub meta の再取得は `claude-container` の `stage_build_context()` 内で行われる（上記「GitHub meta スナップショット」参照）。
+リビルド手順、`CACHEBUST`/`CLAUDE_CODE_VERSION` の扱い、`DISABLE_AUTOUPDATER`、`.build-context/` のクリーンアップは README.md の「イメージの変更」節を参照。
 
 ## コンテナ間の永続化
 
-コンテナ再起動をまたいで保持される bind mount の一覧は README.md の「コンテナ間の永続化」節を参照。bash_history の `.gitignore` 推奨設定は README.md の「利用側プロジェクトの設定」節にある。
+コンテナ再起動をまたいで保持される bind mount の一覧、および bash_history の `.gitignore` 推奨設定は README.md の「コンテナ間の永続化」「利用側プロジェクトの設定」節を参照。
 
 ## セキュリティモデル
 
@@ -84,13 +84,9 @@
 - 許可済みサービスの悪用: GitHub 等の許可済みドメイン自体を送信先にされるリスクは残る。また CDN 配下のドメイン（claude.ai 等）は IP を共有するため、同一 CDN エッジ上の他サイトへも IP レベルでは到達できる。`GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`（README.md「利用側プロジェクトの設定」参照）を設定した場合はこのリスクが能動的になる: プロンプトインジェクションや悪意あるパッケージがトークンを読み取り、そのスコープ内で GitHub へ書き込める。トークンは2本体制（プライマリ `claude-container-self`＝本リポジトリ限定で Issues + Pull requests RW + Contents Read、セカンダリ `issues-all`＝Issues RW のみで対象リポジトリは fine-grained PAT の設定次第）で、緩和策は各トークンの fine-grained PAT スコープ最小化（対象リポジトリ限定・短期限）。**セカンダリの実際の対象リポジトリはPAT設定側で管理され本ファイルには列挙しない**（列挙するとPAT設定変更のたびにここも直す必要が生じるため）。必要なら、把握している候補リポジトリに対し個別に `gh api /repos/<owner>/<repo>` で到達可否（200/404）を確認できる。ただし未知のリポジトリを網羅的に確認する方法ではないため、対象範囲の正本はPAT設定（fine-grained PAT の Repository access）側にあると理解して運用する
   - **push/マージはコンテナ内PATの権限外**: PRマージ（`Contents: write` が必要）は両トークンとも持たないため、悪用されても push・マージ・Release作成には至らない
   - **Pull requests: write による攻撃対象面の拡大**: 他者PRのタイトル・本文改変、レビュー依頼スパム、妨害目的のクローズが可能になる。Issue操作と同種だが一段重い
-  - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。claude-container リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。対策として claude-container の auto-merge は無効を維持し、**コンテナ内で `gh pr review --approve` を自律実行しない**（push同様、人間の確認を経ずにマージ条件を満たす行為として扱う）
-- IP ローテーション: 許可ドメインの IP は約15秒間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
+  - **auto-merge 経由の境界迂回に注意**: PRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。claude-container リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。対策として claude-container の auto-merge は無効を維持し、**コンテナ内で `gh pr review --approve` を自律実行しない**（push同様、人間の確認を経ずにマージ条件を満たす行為として扱う。PreToolUse hook で機構的にブロック済み）
+- IP ローテーション: 許可ドメインの IP は `REFRESH_INTERVAL_SECONDS` 間隔のバックグラウンド差分リフレッシュ（上記 `init-firewall.sh` 節参照）で追従するが、ローテーション直後からリフレッシュが反映されるまでの数十秒（取りこぼし込みで最大 `REFRESH_INTERVAL_SECONDS` の2倍程度）は新規接続が失敗しうる。コンテナ再起動が必須だった以前と比べれば大幅に縮小されるが、ゼロにはできない。GitHub IP レンジはビルド時スナップショット固定のため同様に古くなりうる（`-b` のたびに再取得を試み、失敗時は前回ステージング分を再利用）
 - ビルド時ネットワークは無制限: `pip3 install` は setup.py / build backend の任意コードをビルド時に実行しうる。ただし build context に秘密情報は含まれず、イメージへ焼き込まれた悪性コードの実行時通信は上記 firewall が封じる
-
-## Podman 固有の注意
-
-Podman 固有機能（`userns_mode: keep-id`・`--in-pod false`）と Docker 移植時の注意点は README.md の「Podman 固有の注意」節を参照。
 
 ## 変更後の確認
 
