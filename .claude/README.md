@@ -12,11 +12,11 @@
 | 要素 | グローバル `~/.claude/` | このプロジェクト `.claude/` |
 |---|---|---|
 | [**CLAUDE.md**](#claudemd-の位置) | 全プロジェクト共通ガイドライン | リポジトリルートに配置 |
-| **settings.json** | 基盤設定一式 | `plansDirectory: ".claude/plans"` + SessionStart / PostToolUse hook 登録 |
+| **settings.json** | 基盤設定一式 | `plansDirectory: ".claude/plans"` + SessionStart / PostToolUse / PreToolUse hook 登録 |
 | **settings.local.json** | 存在しない | プロジェクト固有 permissions.allow（git 管理外、`.gitignore` 対象） |
 | **commands/** | 汎用 skill（handover / log-incident / claude-md-panel / update-best-practices） | 存在しない（ドメイン固有 skill なし） |
 | **rules/** | 存在しない | 存在しない |
-| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨）+ [`lint-posttool.sh`](#hooks)（PostToolUse hook。bash スクリプト編集時の shellcheck 自動実行） |
+| **hooks/** | 汎用保護（Write/Edit 検証・注入防止） | [`session-start.sh`](#hooks)（SessionStart hook。handover・lessons.md 自動注入、インシデント検知、best_practices 更新推奨）+ [`lint-posttool.sh`](#hooks)（PostToolUse hook。bash スクリプト編集時の shellcheck 自動実行）+ [`block-pr-approve.sh`](#hooks)（PreToolUse hook。`gh pr review --approve`〔PR 承認〕の自律実行をブロック） |
 | [**incidents/**](#incidents) | 存在しない | 存在しない（発生時に運用開始。手順は `/log-incident` 参照） |
 | [**handovers/**](#handovers) | 存在しない | セッション引き継ぎノート（このプロジェクト配下・git 管理外） |
 | [**lessons.md**](#lessonsmd) | 存在しない | 学びの記録（`.claude/` 直下・git 管理外） |
@@ -37,7 +37,8 @@
 
 ### hooks/
 
-`session-start.sh` と `lint-posttool.sh` を導入済み（いずれも findsummits の同名 hook を移植）。
+`session-start.sh` と `lint-posttool.sh`（いずれも findsummits の同名 hook を移植）、および
+`block-pr-approve.sh`（本リポジトリ固有）を導入済み。
 
 `session-start.sh` は SessionStart イベント
 （`startup|resume|clear|compact`）で実行され、以下を行う:
@@ -69,7 +70,16 @@ shellcheck をかけ、違反を additionalContext で返送する（findsummits
 jq / shellcheck 不在時は警告を返してスキップする fail-soft 設計。`.claude/incidents/`・
 `.claude/handovers/` 配下は対象外。
 
-PreToolUse hook は未定義。
+`block-pr-approve.sh` は PreToolUse イベント（`Bash`）で実行され、gh の「PR 承認」操作
+（`gh pr review --approve` および短縮形 `-a`、加えて生 API 経由の `gh api .../pulls/<N>/reviews` に
+`event=APPROVE` を渡す形）を検知して `permissionDecision: "deny"` でブロックする。`--comment` /
+`--request-changes` 等その他の PR 操作・gh コマンドはすべて通す。目的は、コンテナ内トークン
+（`Pull requests: write` を持つが `Contents: write` は持たない）による自律承認が auto-merge 経由で
+マージ境界を迂回するリスク（issue #10・CLAUDE.md「セキュリティモデル」節）を機構的に塞ぐ
+「2枚目の壁」（1枚目はリポジトリの auto-merge 無効維持）。脅威モデルは「Claude 自身のうっかり
+自律承認の抑止」であり、変数展開・コマンド置換等による意図的な難読化までは防げない（公式も
+コマンド文字列パターンは fragile と明記）。誤検知は承認をブロックする安全方向へ倒す設計とし、
+jq 不在時も生 JSON に対して判定を継続する fail-safe とする。
 
 ### settings.json
 
@@ -77,6 +87,14 @@ PreToolUse hook は未定義。
 {
   "plansDirectory": ".claude/plans",
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-pr-approve.sh\"", "timeout": 10 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
