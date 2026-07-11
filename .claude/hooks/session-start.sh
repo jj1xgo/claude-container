@@ -177,6 +177,11 @@ fi
 SELF_REPO="claude-container"
 FILED_ISSUES_FILE="$ROOT/.claude/filed-issues.txt"
 FILED_OUTPUT=""
+# セカンダリトークン（issue #19）: プライマリで読めない private リポジトリ（セカンダリPATの
+# スコープ内）のエントリを1回だけ再試行する。compose.yml は未設定時 /dev/null をマウントする
+# ため存在チェックでなく非空チェック（-s）で判定する。トークンは自動exportの原則を破らず、
+# コマンド単位の env 前置でのみ使う（値は ps のコマンドラインに現れない）。
+SECONDARY_TOKEN_FILE="/home/node/.config/claude-container/gh-token-secondary"
 if [ -f "$FILED_ISSUES_FILE" ] && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
   n=0
   while IFS= read -r entry || [ -n "$entry" ]; do
@@ -186,6 +191,9 @@ if [ -f "$FILED_ISSUES_FILE" ] && command -v gh >/dev/null 2>&1 && command -v jq
     repo="${entry%%#*}"
     num="${entry##*#}"
     info=$(timeout 10 gh issue view "$num" --repo "$repo" --json state,title,url,comments 2>/dev/null)
+    if [ -z "$info" ] && [ -s "$SECONDARY_TOKEN_FILE" ]; then
+      info=$(GH_TOKEN=$(cat "$SECONDARY_TOKEN_FILE" 2>/dev/null) timeout 10 gh issue view "$num" --repo "$repo" --json state,title,url,comments 2>/dev/null)
+    fi
     [ -z "$info" ] && continue
     line=$(printf '%s' "$info" | jq -r --arg entry "$entry" --arg self "$SELF_REPO" '
       "\(.state) \($entry) \(.title) (\(.url))" as $head

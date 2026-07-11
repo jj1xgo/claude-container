@@ -135,7 +135,9 @@ Plan Modeへの切り替え基準に該当する作業（グローバル CLAUDE.
 - クローズは `gh issue close` を正とする（コミットの `fixes #N` はユーザーの push 時点まで閉じないため使わない）
 - **他リポジトリ（findsummits・sotlas-frontend 等）へ起票したら**、`.claude/filed-issues.txt` に
   `owner/repo#番号` の形式で追記し同ターンでコミットする（session-start hook が状態・最終コメントを
-  自動確認する対象になる）。クローズを確認したら該当行を削除しコミットする
+  自動確認する対象になる）。クローズを確認したら該当行を削除しコミットする。セカンダリトークン
+  限定の private リポジトリ（`dotclaude-ops` 等）宛も同様に記録する（hook がセカンダリトークンで
+  確認する。issue #19）
 
 **ラベル体系**: GitHub デフォルトラベル（`bug`・`enhancement`・`documentation`・`question` 等）に加えて以下を使う。
 
