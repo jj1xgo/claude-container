@@ -167,6 +167,14 @@ fi
 # 外部リポジトリへ起票した issue の状態確認（.claude/filed-issues.txt、上限10件、フェイルソフト）
 # 起票先が固定でない claude-container 特有の追跡（findsummits/sotlas-frontend は起票先が
 # claude-container 固定のため、相手側 open issue を全件見る上記ブロックで足り本ファイルは不要）
+#
+# 応答検知（issue #18）: last-comment の署名から「相手リポジトリ側の応答か」を LLM の自然言語
+# 判定に委ねず、署名フォーマット（グローバル CLAUDE.md で「常に — モデル名 (リポジトリ名)」に
+# 統一済み）を jq で機械的にパースして response: フィールドを付与する。パターン不一致（署名なし
+# の人間コメント・旧形式署名等）は unknown とし、応答あり側へ倒す fail-soft 設計とする。
+# 自リポジトリ名は L134（open issue 確認ブロック）同様に直書き（$ROOT は /workspace のため
+# basename 導出不可、git remote 導出は失敗モードを増やすだけで利益が薄い）。
+SELF_REPO="claude-container"
 FILED_ISSUES_FILE="$ROOT/.claude/filed-issues.txt"
 FILED_OUTPUT=""
 if [ -f "$FILED_ISSUES_FILE" ] && command -v gh >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
@@ -179,10 +187,18 @@ if [ -f "$FILED_ISSUES_FILE" ] && command -v gh >/dev/null 2>&1 && command -v jq
     num="${entry##*#}"
     info=$(timeout 10 gh issue view "$num" --repo "$repo" --json state,title,url,comments 2>/dev/null)
     [ -z "$info" ] && continue
-    line=$(printf '%s' "$info" | jq -r --arg entry "$entry" '
+    line=$(printf '%s' "$info" | jq -r --arg entry "$entry" --arg self "$SELF_REPO" '
       "\(.state) \($entry) \(.title) (\(.url))" as $head
-      | (.comments[-1].body // "" | split("\n") | map(select(length>0)) | if length>0 then .[-1] else "" end) as $lc
-      | if ($lc|length) > 0 then $head + "\n  last-comment: " + ($lc[0:120]) else $head end')
+      | (.comments[-1].body // "" | split("\n") | map(select(test("\\S"))) | if length>0 then .[-1] else "" end) as $lc
+      | (if ($lc|length) == 0 then "no（コメントなし＝応答なし）"
+         else (($lc | capture("^[—–-]+\\s*[^(]*\\((?<repo>[^()]+)\\)\\s*$")) // null) as $m
+           | if $m == null then "unknown（署名パターン不一致・要確認）"
+             elif $m.repo == $self then "no（最終コメントは自リポジトリ投稿）"
+             else "yes（\($m.repo) から応答あり）" end
+         end) as $resp
+      | if ($lc|length) > 0
+        then $head + "\n  last-comment: " + ($lc[0:120]) + "\n  response: " + $resp
+        else $head + "\n  response: " + $resp end')
     [ -n "$line" ] && FILED_OUTPUT="${FILED_OUTPUT}${line}
 "
   done < "$FILED_ISSUES_FILE"
@@ -334,7 +350,7 @@ if [ -f "$FILED_ISSUES_FILE" ]; then
   if [ -n "$FILED_OUTPUT" ]; then
     echo '## 外部リポジトリへ起票した issue の状態'
     echo "$FILED_OUTPUT"
-    echo 'CLOSED のものは .claude/filed-issues.txt から該当行を削除しコミットすること。last-comment が相手リポジトリ側の署名であれば応答ありとみなし、最初の返答時に対応方針を提示すること。'
+    echo 'CLOSED のものは .claude/filed-issues.txt から該当行を削除しコミットすること。response: yes の issue は応答内容を確認し、最初の返答時に対応方針を提示すること。response: unknown は署名から機械判定できなかったもの（人間コメント・旧形式署名等）— 応答ありの可能性があるため gh issue view で本文を確認して判定すること。response: no は対応不要。'
   else
     echo '（外部リポジトリへの起票 issue の自動確認に失敗、または filed-issues.txt が空）'
   fi
