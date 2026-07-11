@@ -1,2 +1,3 @@
-jj1xgo/dotclaude#1
-jj1xgo/dotclaude#2
+jj1xgo/dotclaude-ops#11
+jj1xgo/findsummits#27
+jj1xgo/sotlas-frontend#16
