@@ -6,10 +6,8 @@ tmp
 # ビルド時にイメージへ焼き込まれる共有設定であり、引き続きコミット対象。
 # サンプルは .claude-container.d/env.example を参照。
 .claude-container.d/env
-.claude/settings.local.json
-.claude/lessons.md
-.claude/handovers/
-.claude/incidents/
-.claude/history.jsonl
-.claude/projects/
-.claude/test-results/
+
+# CLAUDE.md と .claude/ はメンテナ個人の開発運用ファイル（プロダクト本体ではない）。
+# private nested git リポジトリ（jj1xgo/claude-container-ops）として別管理する。
+CLAUDE.md
+.claude/
