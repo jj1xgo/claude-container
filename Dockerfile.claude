@@ -42,9 +42,9 @@ RUN apt-get update && \
 # trixie ships gh 2.46.0, 46 releases behind upstream, which has a known-broken
 # `gh pr view`/PR command regression across all repos (Debian bug #1119130,
 # severity: serious) caused by the Projects (classic) API removal; issue
-# commands are unaffected. Build-time network is unrestricted (see CLAUDE.md
-# residual risks), so fetching the signing key and repo metadata here never
-# touches the runtime egress allowlist.
+# commands are unaffected. Build-time network is unrestricted (see README.md's
+# Security Model section), so fetching the signing key and repo metadata here
+# never touches the runtime egress allowlist.
 RUN mkdir -p -m 755 /etc/apt/keyrings && \
     curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \

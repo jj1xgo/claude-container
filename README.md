@@ -177,16 +177,16 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 **hook による追加制限**
 
-以下は**本リポジトリ自身を `/workspace` として Claude Code を動かす場合**（自己ホスト・本リポジトリの開発時）に `.claude/` 同梱の hook が適用する制限であり、フォークにもそのまま同梱される。利用側プロジェクトには自動では適用されない — 同じ保護が必要なら各プロジェクトの `.claude/` に導入する。
+この保護は `examples/hooks/block-pr-approve.sh` として本リポジトリに同梱されているが、プロダクト本体には配線されていない。適用するには、対象プロジェクトの `.claude/settings.json` に自分で配線する（設定例・回帰テストは `examples/hooks/README.md` を参照）。フォークにもファイル自体はそのまま同梱されるが、配線しない限り動作しない。
 
 | 機構 | ブロックするもの | 通すもの |
 |---|---|---|
-| PreToolUse hook `.claude/hooks/block-pr-approve.sh` | `gh pr review --approve`（短縮形 `-a`、短オプションクラスタ内の `a` を含む）／ `gh api …/pulls/<N>/reviews` への `event=APPROVE`（引用符・ヒアドキュメント本文経由を含む） | `--comment`・`--request-changes` 等その他の PR 操作、および gh コマンド全般 |
-| `permissions.deny` | （現状未使用 — 本リポジトリの機構的制限は上記 hook のみ） | — |
+| PreToolUse hook `examples/hooks/block-pr-approve.sh` | `gh pr review --approve`（短縮形 `-a`、短オプションクラスタ内の `a` を含む）／ `gh api …/pulls/<N>/reviews` への `event=APPROVE`（引用符・ヒアドキュメント本文経由を含む） | `--comment`・`--request-changes` 等その他の PR 操作、および gh コマンド全般 |
+| `permissions.deny` | （現状未使用 — この保護の機構は上記 hook のみ） | — |
 
 - **役割分担の基準**: `permissions.deny` はコマンドプレフィックス/glob の静的パターンで丸ごと禁止できる場合に向く。本件は「`gh pr review` のうち `--approve` だけ拒否し `--comment` は通す」「生 API の `event=APPROVE` を JSON 本文・ヒアドキュメント内でも検出する」という文脈依存判定が必要で、deny の glob では過剰ブロックか検出漏れのどちらかになるため hook を採用している
 - **既知の誤検知**: 残存 false positive（安全方向・許容）＝ 実行コマンドが `gh api` で、ヒアドキュメント本文に `pulls/N/reviews` と `event=APPROVE` の両方を引用したケース、複数行ダブルクォート文字列内の承認文字列。残存 false negative（脅威モデル外）＝ 引用文字列内の `<<X` でヒアドキュメント除去を誤爆させる意図的難読化。脅威モデルは「Claude 自身のうっかり自律承認の抑止」であり意図的な難読化は対象外
-- **参照**: リスクの詳細は「セキュリティモデル」節、hook の実装詳細は `.claude/README.md`、回帰テストは `.claude/tests/test-block-pr-approve.sh`
+- **参照**: リスクの詳細は「セキュリティモデル」節、hook の実装詳細・配線例・回帰テストは `examples/hooks/README.md`
 
 ### セキュリティモデル
 
@@ -202,7 +202,7 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 - **攻撃対象面の拡大**: 他者PRのタイトル・本文改変、レビュー依頼スパム、妨害目的のクローズが可能になる。Issue操作と同種だが一段重い
 - **`Contents: write` を付与しない限りpush・PRマージには至らない**: PRマージ（`PUT …/pulls/{n}/merge`）に必要な権限は `Contents: write` であり、`Pull requests` 権限だけでは実行できない
-- **auto-merge 経由の境界迂回に注意**: 一方でPRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。対象リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。auto-merge を無効に保つこと（1枚目の壁）に加え、本リポジトリでは同梱の PreToolUse hook（`.claude/hooks/block-pr-approve.sh`）が承認操作の自律実行を機構的にブロックする（2枚目の壁 — 適用範囲と限界は「何ができて何ができないか」節参照）
+- **auto-merge 経由の境界迂回に注意**: 一方でPRレビュー承認（`gh pr review --approve`）は `Contents: write` なしで実行できる。対象リポジトリで auto-merge が有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動マージしてしまう可能性がある。auto-merge を無効に保つこと（1枚目の壁）に加え、同梱の PreToolUse hook（`examples/hooks/block-pr-approve.sh`、配線すれば）が承認操作の自律実行を機構的にブロックできる（2枚目の壁 — 適用範囲と限界は「何ができて何ができないか」節参照）
 
 ### Podman 固有の注意
 
@@ -412,16 +412,16 @@ Containers start with `--rm`, so internal state is lost on exit. However, the fo
 
 **Additional restrictions via hooks**
 
-The following applies **when running Claude Code with this repository itself as `/workspace`** (i.e., self-hosting / developing this repository) — the bundled `.claude/` hooks enforce this restriction. Forks inherit the same hooks, but they are not automatically applied to projects using claude-container — add equivalent protection to their own `.claude/` if needed.
+This protection ships as `examples/hooks/block-pr-approve.sh` in this repository, but it isn't wired into the product itself. To apply it, wire it into a target project's own `.claude/settings.json` (see `examples/hooks/README.md` for the wiring example and regression tests). Forks inherit the file as-is, but it does nothing until wired.
 
 | Mechanism | Blocks | Allows |
 |---|---|---|
-| PreToolUse hook `.claude/hooks/block-pr-approve.sh` | `gh pr review --approve` (and `-a`, including short-option clusters containing `a`) / `gh api …/pulls/<N>/reviews` with `event=APPROVE` (including via quoted strings or heredoc bodies) | `--comment`, `--request-changes`, and other PR operations, plus `gh` commands in general |
-| `permissions.deny` | (currently unused — this repository's only mechanical restriction is the hook above) | — |
+| PreToolUse hook `examples/hooks/block-pr-approve.sh` | `gh pr review --approve` (and `-a`, including short-option clusters containing `a`) / `gh api …/pulls/<N>/reviews` with `event=APPROVE` (including via quoted strings or heredoc bodies) | `--comment`, `--request-changes`, and other PR operations, plus `gh` commands in general |
+| `permissions.deny` | (currently unused — this protection's only mechanism is the hook above) | — |
 
 - **Division of labor**: `permissions.deny` suits cases that can be blocked outright by a static prefix/glob pattern. This case needs context-dependent judgment ("block `--approve` under `gh pr review` but allow `--comment`"; "detect `event=APPROVE` even inside a JSON body or heredoc"), which a deny glob would either over-block or fail to catch — hence the hook.
 - **Known false positives/negatives**: Residual false positive (safe direction, accepted) = the executed command is genuinely `gh api` and its heredoc body quotes both `pulls/N/reviews` and `event=APPROVE`, or a multi-line double-quoted string contains an approval string. Residual false negative (outside the threat model) = deliberate obfuscation that plants `<<X` inside a quoted string to misfire heredoc stripping. The threat model is "prevent Claude from autonomously approving by accident" — deliberate obfuscation is explicitly out of scope.
-- **See also**: risk details in "Security Model" below, hook implementation in `.claude/README.md`, regression tests in `.claude/tests/test-block-pr-approve.sh`.
+- **See also**: risk details in "Security Model" below; hook implementation, wiring example, and regression tests in `examples/hooks/README.md`.
 
 ### Security Model
 
@@ -437,7 +437,7 @@ Additional risk if a token grants `Pull requests: Read and write` on your own re
 
 - **Larger attack surface**: rewriting other PRs' titles/bodies, spamming review requests, or closing PRs disruptively — similar in kind to issue abuse, but one notch heavier
 - **Push/merge still requires `Contents: write`**: merging a PR (`PUT …/pulls/{n}/merge`) requires the `Contents: write` permission; `Pull requests` permission alone cannot perform it
-- **Watch for auto-merge bypass**: submitting an approving review (`gh pr review --approve`) only requires `Pull requests: write`, not `Contents: write`. If auto-merge is enabled on the target repo, a malicious approval from the container's token could satisfy a required-review branch protection rule and let GitHub complete the merge on its own. Keep auto-merge disabled (the first wall); in this repository, the bundled PreToolUse hook (`.claude/hooks/block-pr-approve.sh`) also mechanically blocks autonomous approval (the second wall — see "What Works and What Doesn't" above for its scope and limits).
+- **Watch for auto-merge bypass**: submitting an approving review (`gh pr review --approve`) only requires `Pull requests: write`, not `Contents: write`. If auto-merge is enabled on the target repo, a malicious approval from the container's token could satisfy a required-review branch protection rule and let GitHub complete the merge on its own. Keep auto-merge disabled (the first wall); the bundled PreToolUse hook (`examples/hooks/block-pr-approve.sh`, if wired) can also mechanically block autonomous approval (the second wall — see "What Works and What Doesn't" above for its scope and limits).
 
 ### Podman-specific Notes
 

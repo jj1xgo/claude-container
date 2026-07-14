@@ -4,12 +4,12 @@
 # 注意: トリガー文字列（gh pr review --approve 等）をこのファイル外のコマンド行
 # （シェルのコマンド履歴・呼び出し元スクリプトの引数）に平文で書くと、稼働中の
 # block-pr-approve.sh 自体に誤ブロックされうる。テストケースは必ずこのファイル内
-# の変数として保持し、実行は「bash .claude/tests/test-block-pr-approve.sh」のみで
-# 完結させること。
+# の変数として保持し、実行は「bash examples/hooks/tests/test-block-pr-approve.sh」
+# のみで完結させること。
 set -u
 
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-HOOK="$ROOT/.claude/hooks/block-pr-approve.sh"
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+HOOK="$ROOT/examples/hooks/block-pr-approve.sh"
 
 fail=0
 

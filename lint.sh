@@ -20,6 +20,15 @@ while IFS= read -r f; do
   head -n1 "$f" 2>/dev/null | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash' && scripts+=("$f")
 done < <(git ls-files -co --exclude-standard)
 
+# .claude/ は private ops リポジトリとして nested git 管理される場合がある
+# （メンテナのローカル環境限定。第三者のクローンには存在せず何もしない）。
+if [ -d .claude/.git ]; then
+  while IFS= read -r f; do
+    [ -f ".claude/$f" ] || continue
+    head -n1 ".claude/$f" 2>/dev/null | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash' && scripts+=(".claude/$f")
+  done < <(git -C .claude ls-files -co --exclude-standard)
+fi
+
 if [ "${#scripts[@]}" -eq 0 ]; then
   echo "ERROR: 対象の bash スクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
   exit 1

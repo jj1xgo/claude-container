@@ -1,0 +1,56 @@
+# examples/hooks/
+
+claude-container のプロダクト本体には配線されていない、任意採用の Claude Code hook 例です。
+必要なプロジェクトの `.claude/settings.json` に自分で配線してください。
+
+## block-pr-approve.sh
+
+`gh` の PR 承認操作（`gh pr review --approve` / `-a`、および生 API 経由の `event=APPROVE`）だけを
+ブロックし、`--comment` / `--request-changes` 等その他の PR 操作・gh コマンドは通す PreToolUse hook です。
+
+**背景**: `GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`（README.md「利用側プロジェクトの設定」節）で
+`Pull requests: write` を持つトークンをコンテナ内に配線した場合、PR レビュー承認
+（`gh pr review --approve`）は `Contents: write` なしで実行できます。対象リポジトリで auto-merge が
+有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動
+マージしてしまう可能性があります（詳細は README.md「セキュリティモデル」節）。auto-merge を無効に
+保つことが1枚目の壁で、このhookはその2枚目の壁として、Claude自身のうっかり自律承認を機構的に防ぎます。
+
+脅威モデルは「Claude 自身のうっかり自律承認の抑止」であり、変数展開・コマンド置換等による意図的な
+難読化までは防げません（公式もコマンド文字列パターンは fragile と明記）。誤検知は必ず安全方向
+（承認をブロックする側）へ倒す設計です。実装の詳細な設計判断はスクリプト本体のコメントを参照してください。
+
+### 配線方法
+
+対象プロジェクトの `.claude/settings.json` に以下を追加します（`claude-container` を使わずホスト直接
+実行の場合も同様）:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/examples/hooks/block-pr-approve.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`block-pr-approve.sh` をプロジェクトの `.claude/hooks/` 配下などにコピーして配置する場合は、
+`command` のパスをコピー先に合わせてください。
+
+### テスト
+
+回帰テストは `tests/test-block-pr-approve.sh` に同梱しています。トリガー文字列
+（`gh pr review --approve` 等）をコマンド履歴に平文で残さないよう、実行は以下の1コマンドで完結させてください:
+
+```bash
+bash examples/hooks/tests/test-block-pr-approve.sh
+```
