@@ -158,6 +158,8 @@ SECRETS_DIR=~/.config/claude-container/secrets.d/<project>
 
 この設定では、hooks 等は従来どおり `GH_TOKEN_SECONDARY_FILE` 経由でファイルを明示的に読み（非 export のまま）、MCP は `SECRETS_DIR` の export 経由で `${GITHUB_MCP_PAT}` を参照する。トークンをローテーションする際は実体ファイル1本を更新するだけで両経路に反映される。
 
+**注意**: 一本化されるのはホスト側の実体ファイルのみで、`.claude-container.d/env` の設定行・コンテナ内マウント先（`gh-token-secondary` と `secrets/<name>`）は各配線ごとに独立したまま2系統残る。同じ実体ファイルを他プロジェクトが別のホストパス（旧 `GH_TOKEN_SECONDARY_FILE` 設定等）から参照している場合があるため、この実体ファイルを削除・移動する前に他プロジェクトからの参照有無を必ず確認すること。
+
 **コンテナ内 git commit（`GITCONFIG_FILE`）**: ホストで `git config --global user.name`/`user.email` を設定していても、デフォルトではコンテナ内に反映されず `git commit` が `Author identity unknown` で失敗する。`.claude-container.d/env` に以下を書くと解消する。
 
 ```
@@ -447,6 +449,8 @@ SECRETS_DIR=~/.config/claude-container/secrets.d/<project>
 ```
 
 With this, hooks keep reading the file explicitly via `GH_TOKEN_SECONDARY_FILE` (still not exported), while MCP picks it up as `${GITHUB_MCP_PAT}` via the `SECRETS_DIR` export path. Rotating the token means updating the one underlying file, and both paths pick up the change.
+
+**Note**: only the underlying host file is unified — the `.claude-container.d/env` settings and the container-side mount points (`gh-token-secondary` and `secrets/<name>`) stay two independent paths. Other projects may reference this same underlying file from a different host path (e.g. a legacy `GH_TOKEN_SECONDARY_FILE` setting), so confirm no other project depends on it before deleting or moving the file.
 
 **Committing from inside the container (`GITCONFIG_FILE`)**: Even if you've set `git config --global user.name`/`user.email` on the host, it isn't reflected inside the container by default, so `git commit` fails with `Author identity unknown`. Fix it by adding this to `.claude-container.d/env`:
 
