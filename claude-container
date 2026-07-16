@@ -202,6 +202,31 @@ if [[ -n "${GITCONFIG_FILE:-}" ]]; then
   fi
 fi
 
+# 汎用シークレットディレクトリの参照（SECRETS_DIR）。任意設定のため未設定時は何もしない。
+# 中の各ファイルはコンテナ内で「ファイル名＝環境変数名」として export される
+# （entrypoint.sh 参照）。設定済みでディレクトリが無い場合は起動を中止する
+# （GITCONFIG_FILE と同じ理由: 不存在パスを bind mount すると podman がホスト側に
+# 空ディレクトリを誤作成するため）。
+if [[ -n "${SECRETS_DIR:-}" ]]; then
+  SECRETS_DIR="${SECRETS_DIR/#\~\//$HOME/}"
+  export SECRETS_DIR
+  if [[ ! -d "$SECRETS_DIR" ]]; then
+    echo "ERROR: SECRETS_DIR=$SECRETS_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" >&2
+    exit 1
+  fi
+  secrets_dir_perm=$(stat -c '%a' "$SECRETS_DIR" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR" 2>/dev/null || echo "")
+  if [[ -n "$secrets_dir_perm" && "$secrets_dir_perm" != "700" ]]; then
+    echo "WARNING: SECRETS_DIR=$SECRETS_DIR のパーミッションが $secrets_dir_perm です。chmod 700 を推奨します。" >&2
+  fi
+  for secret_file in "$SECRETS_DIR"/*; do
+    [[ -f "$secret_file" ]] || continue
+    secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
+    if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
+      echo "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。" >&2
+    fi
+  done
+fi
+
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
 # プロジェクト側の .claude-container.d/ にあればそちらを、

@@ -45,6 +45,11 @@ services:
       # entrypoint.sh は export しない（PATH上に置くだけ）。使用時は `GH_TOKEN=$(cat …)` で
       # コマンドごとに明示指定する（README「利用側プロジェクトの設定」節参照）。
       - ${GH_TOKEN_SECONDARY_FILE:-/dev/null}:/home/node/.config/claude-container/gh-token-secondary:ro
+      # 汎用シークレットディレクトリ（任意本数・任意名のトークンをコンテナへ持ち込むための
+      # opt-in マウント。ファイル名がそのままコンテナ内の環境変数名になる — entrypoint.sh
+      # 参照）。未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン。
+      # ディレクトリでなく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
+      - ${SECRETS_DIR:-/dev/null}:/home/node/.config/claude-container/secrets:ro
       # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
       # 未設定時は /dev/null をマウント（GH_TOKEN_FILE と同じオプトインパターン）。
       # :ro 必須 — コンテナ内から credential.helper 等を書き換えられるとホスト側

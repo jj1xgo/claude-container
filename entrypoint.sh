@@ -43,4 +43,33 @@ if [ -s "$GH_TOKEN_MOUNT" ]; then
   export GH_TOKEN
 fi
 
+# 汎用シークレットディレクトリ（SECRETS_DIR、compose.yml が読み取り専用マウント）。
+# 中の各ファイルを「ファイル名＝環境変数名」として export する。上記レガシー GH_TOKEN
+# export の後に置くのは仕様: 競合時（レガシー設定済み + secrets/GH_TOKEN 併置）は
+# レガシーが勝ち、secrets 側は下記の既存変数チェックで WARNING を出してスキップする。
+# 未設定時は compose.yml の /dev/null フォールバックによりマウント先がキャラクタ
+# デバイスになるため、[ -d ] で確実に偽判定できる。
+SECRETS_MOUNT=/home/node/.config/claude-container/secrets
+if [ -d "$SECRETS_MOUNT" ]; then
+  for secret_file in "$SECRETS_MOUNT"/*; do
+    # 空ディレクトリ時はグロブがリテラル文字列のまま残るため [ -f ] で弾く
+    # （サブディレクトリ・壊れた symlink も同時に除外できる）。
+    [ -f "$secret_file" ] || continue
+    secret_name=$(basename "$secret_file")
+    if ! [[ "$secret_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      echo "WARNING: secrets: '$secret_name' is not a valid environment variable name; skipping" >&2
+      continue
+    fi
+    # ${!name+x} は set 判定（値でなく「存在するか」）。set-but-empty な compose
+    # 変数（例: CLAUDE_CONTAINER_NO_FIREWALL）や bash の readonly シェル変数
+    # （UID 等）も捕捉できるため、非空判定（${!name:-}）より安全側に倒せる。
+    if [ -n "${!secret_name+x}" ]; then
+      echo "WARNING: secrets: '$secret_name' is already set in the environment; skipping" >&2
+      continue
+    fi
+    secret_value=$(tr -d '\n\r' <"$secret_file")
+    export "$secret_name=$secret_value"
+  done
+fi
+
 exec claude --dangerously-skip-permissions
