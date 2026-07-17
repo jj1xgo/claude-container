@@ -172,6 +172,8 @@ SECRETS_DIR=~/.config/claude-container/secrets.d/<project>
 
 このトークンは private リポジトリの fetch/pull にも有効になる（`Contents: Read` 相当を含むため）副作用がある点に注意。
 
+`GIT_PUSH_TOKEN` を検知すると、`entrypoint.sh` は `GIT_CONFIG_*` 環境変数で `credential.helper` を空にリセットする。これは、`GITCONFIG_FILE`（後述）でマウントしたホストの gitconfig に `credential.helper = store` 等の設定が含まれていても、`git-askpass.sh` が都度読んだトークンを `~/.git-credentials` へ平文で永続化させないための対策（マウントされる `~/.gitconfig` は read-only のため `git config --global` での上書きはできず、全 config ファイルより後に適用される `GIT_CONFIG_*` 環境変数がこの目的で使える唯一の手段）。
+
 **コンテナ内 git commit（`GITCONFIG_FILE`）**: ホストで `git config --global user.name`/`user.email` を設定していても、デフォルトではコンテナ内に反映されず `git commit` が `Author identity unknown` で失敗する。`.claude-container.d/env` に以下を書くと解消する。
 
 ```
@@ -477,6 +479,8 @@ With this, hooks keep reading the file explicitly via `GH_TOKEN_SECONDARY_FILE` 
 On launch, `entrypoint.sh` detects `SECRETS_DIR/noexport/GIT_PUSH_TOKEN` and automatically sets `GIT_ASKPASS` (the `GIT_PUSH_TOKEN` environment variable itself is never exported). From then on, `git push` to the target repository (**HTTPS remotes only** — this does not work for SSH remotes) goes through without manual intervention, since `git-askpass.sh` reads the token from the file just in time on each prompt. `git-askpass.sh` is fail-closed: it only answers prompts addressed to github.com, and refuses any other host or unexpected prompt.
 
 Note the side effect: this token also enables fetch/pull on private repositories (since it implies `Contents: Read`).
+
+When `GIT_PUSH_TOKEN` is detected, `entrypoint.sh` also resets `credential.helper` to empty via `GIT_CONFIG_*` environment variables. This prevents a host gitconfig mounted via `GITCONFIG_FILE` (below) that sets `credential.helper = store` (or similar) from persisting the token `git-askpass.sh` reads just-in-time into `~/.git-credentials` in plaintext (the mounted `~/.gitconfig` is read-only, so `git config --global` can't override it — `GIT_CONFIG_*` environment variables, applied after all config files, are the only way to do this).
 
 **Committing from inside the container (`GITCONFIG_FILE`)**: Even if you've set `git config --global user.name`/`user.email` on the host, it isn't reflected inside the container by default, so `git commit` fails with `Author identity unknown`. Fix it by adding this to `.claude-container.d/env`:
 

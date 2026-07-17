@@ -83,6 +83,15 @@ fi
 # GIT_PUSH_TOKEN という環境変数は Claude 本体やその子プロセスの環境には現れない。
 if [ -f "$SECRETS_MOUNT/noexport/GIT_PUSH_TOKEN" ]; then
   export GIT_ASKPASS=/usr/local/bin/git-askpass.sh
+  # GITCONFIG_FILE 経由で持ち込まれた credential.helper（例: store）が askpass で
+  # 得たトークンを ~/.git-credentials へ平文保存してしまうのを防ぐ（issue #25）。
+  # GIT_CONFIG_* 環境変数は全 config ファイル（system/XDG/global 含む）より後に
+  # 適用され、空文字列は helper リストのリセットという公式仕様（git help
+  # gitcredentials）。マウントされた ~/.gitconfig は read-only のため
+  # `git config --global` での上書きはできず、この手段が唯一の書き換え方法。
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=credential.helper
+  export GIT_CONFIG_VALUE_0=""
 fi
 
 exec claude --dangerously-skip-permissions
