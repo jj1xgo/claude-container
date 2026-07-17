@@ -225,6 +225,22 @@ if [[ -n "${SECRETS_DIR:-}" ]]; then
       echo "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。" >&2
     fi
   done
+  # noexport/ サブディレクトリ（コンテナ内で export されないファイル秘密の規約、
+  # README「SECRETS_DIR」節参照）も同じ検証を行う。上のループは [[ -f ]] 判定で
+  # サブディレクトリ自体を黙ってスキップするため、ここで個別に確認する。
+  if [[ -d "$SECRETS_DIR/noexport" ]]; then
+    noexport_dir_perm=$(stat -c '%a' "$SECRETS_DIR/noexport" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR/noexport" 2>/dev/null || echo "")
+    if [[ -n "$noexport_dir_perm" && "$noexport_dir_perm" != "700" ]]; then
+      echo "WARNING: SECRETS_DIR/noexport のパーミッションが $noexport_dir_perm です。chmod 700 を推奨します。" >&2
+    fi
+    for secret_file in "$SECRETS_DIR/noexport"/*; do
+      [[ -f "$secret_file" ]] || continue
+      secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
+      if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
+        echo "WARNING: SECRETS_DIR/noexport 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。" >&2
+      fi
+    done
+  fi
 fi
 
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
@@ -237,6 +253,7 @@ stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
   cp "$RUN_DIR/entrypoint.sh" "$BUILD_CONTEXT_DIR/entrypoint.sh"
   cp "$RUN_DIR/init-firewall.sh" "$BUILD_CONTEXT_DIR/init-firewall.sh"
+  cp "$RUN_DIR/git-askpass.sh" "$BUILD_CONTEXT_DIR/git-askpass.sh"
 
   local file
   for file in packages.txt requirements.txt allowed-domains.txt; do

@@ -49,6 +49,11 @@ fi
 # レガシーが勝ち、secrets 側は下記の既存変数チェックで WARNING を出してスキップする。
 # 未設定時は compose.yml の /dev/null フォールバックによりマウント先がキャラクタ
 # デバイスになるため、[ -d ] で確実に偽判定できる。
+#
+# noexport/ サブディレクトリの規約（README「SECRETS_DIR」節参照）: 下のループは
+# [ -f ] 判定でサブディレクトリを黙ってスキップするため、noexport/ 配下のファイルは
+# ここで export されず「マウントされるがファイルとしてのみ読める秘密」になる。
+# 意図的な仕様であり、noexport/ 用の追加処理は不要（各利用者がファイルを明示的に読む）。
 SECRETS_MOUNT=/home/node/.config/claude-container/secrets
 if [ -d "$SECRETS_MOUNT" ]; then
   for secret_file in "$SECRETS_MOUNT"/*; do
@@ -70,6 +75,14 @@ if [ -d "$SECRETS_MOUNT" ]; then
     secret_value=$(tr -d '\n\r' <"$secret_file")
     export "$secret_name=$secret_value"
   done
+fi
+
+# git push の opt-in 配線（README「git push を使う場合」節参照）。
+# SECRETS_DIR/noexport/GIT_PUSH_TOKEN が存在するときのみ GIT_ASKPASS を export する。
+# トークン自体は export しない（git-askpass.sh がファイルから都度読む）ため、
+# GIT_PUSH_TOKEN という環境変数は Claude 本体やその子プロセスの環境には現れない。
+if [ -f "$SECRETS_MOUNT/noexport/GIT_PUSH_TOKEN" ]; then
+  export GIT_ASKPASS=/usr/local/bin/git-askpass.sh
 fi
 
 exec claude --dangerously-skip-permissions

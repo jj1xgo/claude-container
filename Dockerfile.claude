@@ -120,6 +120,11 @@ RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
+# GIT_ASKPASS helper for the opt-in git push wiring (see entrypoint.sh). Root-owned,
+# same pattern as init-firewall.sh, so the node user cannot alter it at runtime.
+COPY git-askpass.sh /usr/local/bin/git-askpass.sh
+RUN chmod 755 /usr/local/bin/git-askpass.sh
+
 # GitHub meta snapshot, fetched by claude-container's stage_build_context() into the
 # build context (not fetched here, so this step never touches the unauthenticated
 # GitHub API rate limit itself). init-firewall.sh reads only this snapshot at runtime
