@@ -1,7 +1,7 @@
 tmp
 .build-context
 # claude-container 自身を対象プロジェクトとして自己ホスト起動する際の個人設定。
-# .claude-container.d/env はランタイム設定でホスト固有パス（GH_TOKEN_FILE等）を
+# .claude-container.d/env はランタイム設定でホスト固有パス（SECRETS_DIR等）を
 # 含みうるため ignore 対象。.claude-container.d/ 配下の他ファイル（packages.txt 等）は
 # ビルド時にイメージへ焼き込まれる共有設定であり、引き続きコミット対象。
 # サンプルは .claude-container.d/env.example を参照。

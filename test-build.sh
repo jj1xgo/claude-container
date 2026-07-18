@@ -147,9 +147,9 @@ chmod +x "$ENV_TESTROOT/bin/podman"
 
 ENV_PROJECT_DIR="$ENV_TESTROOT/proj"
 mkdir -p "$ENV_PROJECT_DIR/.claude-container.d"
-echo "dummy-token-content" > "$ENV_TESTROOT/dummy-gh-token"
-chmod 600 "$ENV_TESTROOT/dummy-gh-token"
-echo "GH_TOKEN_FILE=$ENV_TESTROOT/dummy-gh-token" > "$ENV_PROJECT_DIR/.claude-container.d/env"
+echo "[user]
+	name = dummy" > "$ENV_TESTROOT/dummy-gitconfig"
+echo "GITCONFIG_FILE=$ENV_TESTROOT/dummy-gitconfig" > "$ENV_PROJECT_DIR/.claude-container.d/env"
 
 BEFORE_BUILD_CONTEXTS="$(ls -1 "${SCRIPT_DIR}/.build-context/" 2>/dev/null || true)"
 PATH="$ENV_TESTROOT/bin:$PATH" "${SCRIPT_DIR}/claude-container" "$ENV_PROJECT_DIR" >/dev/null 2>&1

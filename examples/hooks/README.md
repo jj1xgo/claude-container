@@ -8,9 +8,9 @@ claude-container のプロダクト本体には配線されていない、任意
 `gh` の PR 承認操作（`gh pr review --approve` / `-a`、および生 API 経由の `event=APPROVE`）だけを
 ブロックし、`--comment` / `--request-changes` 等その他の PR 操作・gh コマンドは通す PreToolUse hook です。
 
-**背景**: `GH_TOKEN_FILE`/`GH_TOKEN_SECONDARY_FILE`（README.md「利用側プロジェクトの設定」節）で
-`Pull requests: write` を持つトークンをコンテナ内に配線した場合、PR レビュー承認
-（`gh pr review --approve`）は `Contents: write` なしで実行できます。対象リポジトリで auto-merge が
+**背景**: `SECRETS_DIR` 直下の `GITHUB_MAIN_PAT`（README.md「GitHub トークンの配線」節）が
+`Pull requests: write` を持つ場合、PR レビュー承認（`GH_TOKEN=$(cat "$GITHUB_MAIN_PAT_FILE") gh pr
+review --approve` 等）は `Contents: write` なしでも実行できます。対象リポジトリで auto-merge が
 有効な状態だと、コンテナ内トークンによる承認だけで required review 条件が満たされ GitHub 側が自動
 マージしてしまう可能性があります（詳細は README.md「セキュリティモデル」節）。auto-merge を無効に
 保つことが1枚目の壁で、このhookはその2枚目の壁として、Claude自身のうっかり自律承認を機構的に防ぎます。

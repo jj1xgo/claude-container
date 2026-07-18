@@ -6,7 +6,7 @@
 set -euo pipefail
 
 prompt="$1"
-token_file=/home/node/.config/claude-container/secrets/noexport/GIT_PUSH_TOKEN
+token_file=/home/node/.config/claude-container/secrets/GITHUB_MAIN_PAT
 github_host_re="^https://(x-access-token@)?github\.com(/.*)?\$"
 
 case "$prompt" in

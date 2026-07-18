@@ -36,19 +36,11 @@ services:
       - ${CLAUDE_CONFIG_DIR:-~}/.claude:/home/node/.claude
       - ${CONTEXT}:/workspace
       - ${EXTRA_MOUNT:-/dev/null}:/data
-      # GitHub 書き込み用トークン（プライマリ、gh CLI が GH_TOKEN 環境変数を自動認識）。
-      # 未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン）。
-      # entrypoint.sh がこのファイルを読んで export する。environment: に直接書かない
-      # 理由は entrypoint.sh 側のコメント参照（podman inspect にトークンを出さないため）。
-      - ${GH_TOKEN_FILE:-/dev/null}:/home/node/.config/claude-container/gh-token:ro
-      # GitHub 書き込み用トークン（セカンダリ、クロスリポジトリ Issue 書き込み専用）。
-      # entrypoint.sh は export しない（PATH上に置くだけ）。使用時は `GH_TOKEN=$(cat …)` で
-      # コマンドごとに明示指定する（README「利用側プロジェクトの設定」節参照）。
-      - ${GH_TOKEN_SECONDARY_FILE:-/dev/null}:/home/node/.config/claude-container/gh-token-secondary:ro
       # 汎用シークレットディレクトリ（任意本数・任意名のトークンをコンテナへ持ち込むための
-      # opt-in マウント。ファイル名がそのままコンテナ内の環境変数名になる — entrypoint.sh
-      # 参照）。未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン。
-      # ディレクトリでなく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
+      # opt-in マウント。SECRETS_DIR 直下は export されない、export/ サブディレクトリの
+      # ファイルのみコンテナ内で環境変数として export される — entrypoint.sh 参照）。
+      # 未設定時は /dev/null をマウント（EXTRA_MOUNT と同じオプトインパターン。ディレクトリで
+      # なく /dev/null になるため entrypoint.sh 側は [ -d ] で判別する）。
       - ${SECRETS_DIR:-/dev/null}:/home/node/.config/claude-container/secrets:ro
       # ホスト側 git 設定のオプトインマウント（issue #6: Author identity unknown 対策）。
       # 未設定時は /dev/null をマウント（GH_TOKEN_FILE と同じオプトインパターン）。
