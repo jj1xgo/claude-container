@@ -33,6 +33,47 @@ for f in \
   [ -f "$f" ] && sed -i "s|/home/[^/]*/\.claude|/home/node/.claude|g" "$f"
 done
 
+# MCP監査ゲート（stdio型サーバーの検知＋TTY確認、claude-container-ops#21）。
+# .mcp.json（project-scoped、Claude Code標準機能により自動ロードされる）のうち
+# command フィールドを持つ stdio 型サーバーは、npx 等のネットワーク取得を経ずに
+# リポジトリ同梱コードとして実行できるため、ファイアウォール・再ビルドという
+# 既存の人間ゲートの対象外になる。セッション開始と同時に人間・モデルどちらの
+# 判断も挟まず実行され、export 済みトークン等を読めてしまうため、ここで TTY
+# 確認を挟む（http/sse 型は接続先をファイアウォールが審査するため対象外）。
+# 環境変数による opt-out は意図的に設けない: .claude-container.d/env は全キー
+# 無条件で export されるため、悪意あるリポジトリ自身が opt-out 変数を書けて
+# しまいゲートとして無意味になる（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。
+MCP_CONFIG=/workspace/.mcp.json
+if [ -f "$MCP_CONFIG" ]; then
+  if ! stdio_servers=$(jq -r '
+    (.mcpServers // {}) | to_entries[] | select(.value.command != null) |
+    "\(.key)\t\(.value.command)\t\((.value.args // []) | join(" "))"
+  ' "$MCP_CONFIG" 2>/dev/null); then
+    echo "ERROR: failed to parse $MCP_CONFIG as JSON; refusing to start" >&2
+    exit 1
+  fi
+  if [ -n "$stdio_servers" ]; then
+    echo "WARNING: $MCP_CONFIG declares stdio-type MCP server(s). Their code runs immediately at session start (no per-tool-call confirmation) and can read all exported secrets:" >&2
+    while IFS=$'\t' read -r mcp_name mcp_cmd mcp_args; do
+      echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
+    done <<<"$stdio_servers"
+    printf 'Allow these MCP servers to start? [y/N] ' >&2
+    if ! read -r mcp_confirm </dev/tty; then
+      echo "ERROR: no interactive TTY available to confirm MCP stdio servers; refusing to start" >&2
+      exit 1
+    fi
+    case "$mcp_confirm" in
+      y | Y | yes | YES | Yes) ;;
+      *)
+        echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+        exit 1
+        ;;
+    esac
+  else
+    echo "INFO: MCP audit: $MCP_CONFIG contains no stdio servers; OK" >&2
+  fi
+fi
+
 # GitHub トークン配線（v4〜、claude-container#24）。SECRETS_DIR は exposure 軸で設計する:
 # 「常時使える（export される）権限は最小に、広い権限は明示操作の壁の向こうに」。
 #   - SECRETS_DIR/export/<NAME> ... コンテナ内で環境変数として export される（issues 限定PAT等）
