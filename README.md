@@ -216,6 +216,8 @@ GITCONFIG_FILE=~/.gitconfig
 
 stdio タイプのサーバーをどうしても使いたい場合は、`npx` 等の実行時取得（＝セッション開始のたびネットワーク越しに未検証のコードを取得する経路）でなく、`.claude-container.d/packages.txt` 等によるビルド時焼き込み、またはホスト側インストール＋bind mount（`EXTRA_MOUNT` 等）で導入し、バージョンを固定することを推奨する。あわせて、npm レジストリ（`registry.npmjs.org` 等）を `allowed-domains.txt` へ追加しないこと — 追加すると `npx` 経由の実行時取得が成立し、上記の対話確認を毎回強制されるだけでなく、取得するコード自体の検証が効かなくなる。
 
+**TOFU（Trust On First Use）による確認の省略**（claude-container#28）: 対話確認で `y` と回答すると、`claude-container` スクリプトが承認時点の stdio サーバー定義のハッシュを、ホスト側 `~/.local/state/claude-container/mcp-approvals/<project>` に記録する（`.mcp.json` 自体やコンテナ内には保存しない — コンテナ側から改変できない場所に置くのが目的）。次回以降の起動では、`.mcp.json` の stdio サーバー定義がこの記録と一致する限り対話確認を自動的にスキップし、定義が変化した場合のみ再度確認を求める。記録はプロジェクトごとに独立しており、`--clean <directory>` で当該プロジェクト分のみ、引数なしの `--clean` で全プロジェクト分をまとめて削除できる。
+
 なお `claude mcp add` によるローカル／ユーザースコープの登録（`~/.claude.json` 側）はこのゲートの対象外である。これはリポジトリ側が制御できないファイルへの登録のため「悪意あるリポジトリの初回起動」という脅威モデルには当てはまらず、各プロジェクトの利用者が自己管理する範囲になる。
 
 ### アーキテクチャ
@@ -559,6 +561,8 @@ GITCONFIG_FILE=~/.gitconfig
 Why this confirmation exists: unlike http-type servers, stdio-type code can be bundled directly in the repository and executed without any network fetch (e.g. via `npx`), so it doesn't pass through the existing firewall/rebuild wall. Since Claude Code's own MCP approval prompt doesn't function under `--dangerously-skip-permissions` (see "Security Model" below), this confirmation is the only remaining wall. **There is deliberately no environment-variable opt-out**: `.claude-container.d/env` exports every key unconditionally, so an opt-out variable could be set by the untrusted repository itself, making it meaningless as a gate against a malicious one.
 
 If you do need a stdio-type server, prefer baking it in via `.claude-container.d/packages.txt` or a host-side install + bind mount (e.g. `EXTRA_MOUNT`) with a pinned version, rather than runtime fetching via `npx` (which fetches unverified code over the network on every session start). Relatedly, don't add npm registries (e.g. `registry.npmjs.org`) to `allowed-domains.txt` — doing so would make `npx`-based runtime fetching work, which not only forces the confirmation above on every session but also removes any check on the code being fetched.
+
+**Skipping the confirmation via TOFU (Trust On First Use)** (claude-container#28): answering `y` makes the `claude-container` script record a hash of the approved stdio server definitions on the host, under `~/.local/state/claude-container/mcp-approvals/<project>` (not inside `.mcp.json` or the container — the point is to keep it somewhere the container itself can't alter). On subsequent launches, confirmation is skipped automatically as long as the stdio server definitions in `.mcp.json` still match that record; any change to the definitions triggers a fresh confirmation. Records are per-project; `--clean <directory>` removes the one for that project, and `--clean` with no argument removes all of them.
 
 Note that registering a server via `claude mcp add` at local/user scope (`~/.claude.json`) is outside this gate's scope — since the repository doesn't control that file, it doesn't fall under the "malicious repository's first launch" threat model, and is left to each project's own management.
 

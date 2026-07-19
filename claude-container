@@ -66,6 +66,9 @@ clean_all() {
   [[ $found -eq 1 ]] || echo "No claude-container images found, skipping image/network removal."
   echo "Removing staged build contexts: $RUN_DIR/.build-context"
   rm -rf "$RUN_DIR/.build-context" && echo "Removed." || echo "Not found, skipping."
+  local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
+  echo "Removing MCP approval records: $approval_store"
+  rm -rf "$approval_store" && echo "Removed." || echo "Not found, skipping."
   echo "Pruning dangling images..."
   podman image prune -f
 }
@@ -78,6 +81,8 @@ clean_project() {
   podman network rm "${PROJECT_NAME}_default" 2>/dev/null && echo "Removed." || echo "Network not found, skipping."
   echo "Removing staged build context: $BUILD_CONTEXT_DIR"
   rm -rf "$BUILD_CONTEXT_DIR" && echo "Removed." || echo "Not found, skipping."
+  echo "Removing MCP approval record: $MCP_APPROVAL_RECORD"
+  rm -f "$MCP_APPROVAL_RECORD" && echo "Removed." || echo "Not found, skipping."
   echo "Pruning dangling images..."
   podman image prune -f
 }
@@ -116,6 +121,13 @@ compute_project_name() {
 }
 compute_project_name
 echo "PROJECT: $PROJECT_NAME"
+
+# MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。load_env_file() より
+# 前でここに固定することで、プロジェクト側の .claude-container.d/env が HOME や
+# 将来追加されうる置き場所系の変数を書き換えても、記録パスは一切影響を受けない
+# （env 由来の値を信用しない設計。詳細は check_mcp_approval() のコメント参照）。
+MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
+MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
 
 # プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
 PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
@@ -249,6 +261,89 @@ if [[ -n "${SECRETS_DIR:-}" ]]; then
     done
   fi
 fi
+
+# MCP監査ゲートのTOFU（Trust On First Use）＋変更検知（claude-container#28）。
+# .mcp.json のstdio型サーバー定義（entrypoint.sh側のTTY確認対象）が前回承認時から
+# 変化していなければ、承認記録のハッシュをコンテナへ渡して entrypoint.sh 側の
+# TTY確認をスキップさせる。不一致・記録なしの場合はここで（-b のビルドより前に）
+# TTY確認を行い、拒否時の無駄なビルドを避ける。
+#
+# 迂回防止の設計:
+#   - 承認記録の格納パス（MCP_APPROVAL_STORE/RECORD）は load_env_file() より前に
+#     $HOME から直接算出済み（上記）。プロジェクト側 env の影響を受けない。
+#   - MCP_APPROVAL_FILE は本関数の全分岐の末尾で必ず export する。呼び出し元
+#     （compose.yml の ${MCP_APPROVAL_FILE:-/dev/null}）は env 経由の値を一切
+#     参照しないため、プロジェクト側が env に MCP_APPROVAL_FILE を書いても無視される。
+#   - 記録ファイルは compose.yml 側で :ro マウントする。コンテナ内から改変不可。
+#   - ハッシュの正規化 jq フィルタは entrypoint.sh の照合ロジックと同一でなければ
+#     ならない（変更時は両ファイルを同期すること）。
+check_mcp_approval() {
+  MCP_APPROVAL_FILE=""
+
+  if ! command -v jq >/dev/null 2>&1; then
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+
+  local mcp_config="$WORKING_DIR/.mcp.json"
+  if [[ ! -f "$mcp_config" ]]; then
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+
+  local stdio_json
+  if ! stdio_json=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$mcp_config" 2>/dev/null); then
+    echo "WARNING: $mcp_config の解析に失敗しました。事前承認をスキップします（コンテナ内のMCP監査ゲートが起動可否を判定します）。" >&2
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+
+  if [[ "$stdio_json" == "[]" ]]; then
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+
+  local current_hash recorded_hash=""
+  # entrypoint.sh 側は `jq ... | sha256sum`（jqの出力に末尾改行あり）で直接計算するため、
+  # ここも printf '%s\n' で末尾改行を復元してから計算する（'%s' だと $() の改行除去により
+  # 同一入力でも異なるハッシュになり、TOFU照合が常に不一致になるバグを検証中に発見した）。
+  current_hash=$(printf '%s\n' "$stdio_json" | sha256sum | cut -c1-64)
+  if [[ -f "$MCP_APPROVAL_RECORD" ]]; then
+    recorded_hash=$(cat "$MCP_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+
+  if [[ -n "$recorded_hash" && "$recorded_hash" == "$current_hash" ]]; then
+    echo "INFO: MCP audit: stdio servers pre-approved (hash match); skipping confirmation" >&2
+    MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+
+  echo "WARNING: $mcp_config declares stdio-type MCP server(s) that changed since last approval (or have never been approved). Their code runs immediately at session start and can read all exported secrets:" >&2
+  echo "$stdio_json" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' >&2
+  printf 'Allow these MCP servers to start and remember this approval? [y/N] ' >&2
+  local mcp_confirm=""
+  if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
+    echo "INFO: no interactive TTY available here; deferring confirmation to the in-container MCP audit gate." >&2
+    export MCP_APPROVAL_FILE
+    return 0
+  fi
+  case "$mcp_confirm" in
+    y | Y | yes | YES | Yes)
+      mkdir -p "$MCP_APPROVAL_STORE"
+      chmod 700 "$MCP_APPROVAL_STORE"
+      printf '%s' "$current_hash" > "$MCP_APPROVAL_RECORD"
+      chmod 600 "$MCP_APPROVAL_RECORD"
+      MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
+      export MCP_APPROVAL_FILE
+      ;;
+    *)
+      echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+      exit 1
+      ;;
+  esac
+}
+check_mcp_approval
 
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は

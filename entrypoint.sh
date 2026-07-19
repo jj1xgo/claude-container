@@ -53,22 +53,39 @@ if [ -f "$MCP_CONFIG" ]; then
     exit 1
   fi
   if [ -n "$stdio_servers" ]; then
-    echo "WARNING: $MCP_CONFIG declares stdio-type MCP server(s). Their code runs immediately at session start (no per-tool-call confirmation) and can read all exported secrets:" >&2
-    while IFS=$'\t' read -r mcp_name mcp_cmd mcp_args; do
-      echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
-    done <<<"$stdio_servers"
-    printf 'Allow these MCP servers to start? [y/N] ' >&2
-    if ! read -r mcp_confirm </dev/tty; then
-      echo "ERROR: no interactive TTY available to confirm MCP stdio servers; refusing to start" >&2
-      exit 1
+    # TOFU承認記録との照合（claude-container#28）。ホスト側 claude-container が
+    # 事前に対話承認済みなら、その正規化ハッシュが :ro マウントされている
+    # （/etc/claude-container/mcp-approved-hash、compose.yml参照）。正規化jqフィルタは
+    # ホスト側 check_mcp_approval() と同一でなければならない（変更時は両ファイルを同期）。
+    approved_hash_file=/etc/claude-container/mcp-approved-hash
+    current_hash=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$MCP_CONFIG" 2>/dev/null | sha256sum | cut -c1-64)
+    recorded_hash=""
+    if [ -f "$approved_hash_file" ]; then
+      recorded_hash=$(cat "$approved_hash_file" 2>/dev/null || true)
     fi
-    case "$mcp_confirm" in
-      y | Y | yes | YES | Yes) ;;
-      *)
-        echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+    if [ -n "$recorded_hash" ] && [ "$recorded_hash" = "$current_hash" ]; then
+      echo "INFO: MCP audit: stdio servers pre-approved (hash match); OK" >&2
+    else
+      echo "WARNING: $MCP_CONFIG declares stdio-type MCP server(s). Their code runs immediately at session start (no per-tool-call confirmation) and can read all exported secrets:" >&2
+      if [ -n "$recorded_hash" ]; then
+        echo "  (note: definition changed since the last host-side approval)" >&2
+      fi
+      while IFS=$'\t' read -r mcp_name mcp_cmd mcp_args; do
+        echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
+      done <<<"$stdio_servers"
+      printf 'Allow these MCP servers to start? [y/N] ' >&2
+      if ! read -r mcp_confirm </dev/tty; then
+        echo "ERROR: no interactive TTY available to confirm MCP stdio servers; refusing to start" >&2
         exit 1
-        ;;
-    esac
+      fi
+      case "$mcp_confirm" in
+        y | Y | yes | YES | Yes) ;;
+        *)
+          echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+          exit 1
+          ;;
+      esac
+    fi
   else
     echo "INFO: MCP audit: $MCP_CONFIG contains no stdio servers; OK" >&2
   fi

@@ -47,5 +47,10 @@ services:
       # :ro 必須 — コンテナ内から credential.helper 等を書き換えられるとホスト側
       # 任意コマンド実行につながるため。entrypoint.sh 側の処理は不要（git が直接読む）。
       - ${GITCONFIG_FILE:-/dev/null}:/home/node/.gitconfig:ro
+      # MCP監査ゲートのTOFU承認記録（claude-container#28）。ホスト側 claude-container
+      # スクリプトが人間の対話承認後にのみ書き込む1行ハッシュファイル。:ro必須 —
+      # コンテナ内から書き換えられると次回起動の自動承認を偽装できてしまうため。
+      # 未設定時は /dev/null（SECRETS_DIR と同じオプトインパターン）。
+      - ${MCP_APPROVAL_FILE:-/dev/null}:/etc/claude-container/mcp-approved-hash:ro
       - /etc/localtime:/etc/localtime:ro
     working_dir: /workspace
