@@ -1,1 +1,2 @@
 api.githubcopilot.com
+chatgpt.com
