@@ -766,7 +766,16 @@ fi
 # 既存の古いイメージでそのまま起動してしまう（fail-open）ため、
 # build を独立させ set -e で失敗時に起動へ進ませないようにする（fail-closed）。
 if [[ $BUILD -eq 1 ]]; then
-  CACHEBUST="$(date +%s)" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+  # codex-version.txt が "latest" のプロジェクトだけ Codex レイヤーのキャッシュを
+  # 破棄する（Dockerfile.claude の ARG CODEX_CACHEBUST 参照箇所と対）。固定バージョン
+  # 指定・未使用（空ファイル）のプロジェクトは "pinned" のまま変えず、既存のビルド
+  # キャッシュ効率を壊さない。
+  CODEX_CACHEBUST=pinned
+  if [[ -f "$BUILD_CONTEXT_DIR/codex-version.txt" ]] \
+     && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
+    CODEX_CACHEBUST="$(date +%s)"
+  fi
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
     BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false build claude-auth-workspace
 fi

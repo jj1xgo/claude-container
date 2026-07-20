@@ -103,15 +103,21 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
     fi
 
 # Install Codex CLI from npm when .claude-container.d/codex-version.txt specifies a
-# version (e.g. "0.46.0"). Optional, sibling design to node-version.txt above (see
-# claude-container-ops#27 for the design rationale: declarative opt-in file, not a
-# general-purpose build hook). Requires npm — projects opting in must also set
-# node-version.txt (or add nodejs/npm via packages.txt).
+# version (e.g. "0.46.0") or the literal "latest". Optional, sibling design to
+# node-version.txt above (see claude-container-ops#27 for the design rationale:
+# declarative opt-in file, not a general-purpose build hook). Requires npm —
+# projects opting in must also set node-version.txt (or add nodejs/npm via
+# packages.txt). "latest" resolves via npm's own dist-tag on every install, same
+# as Claude Code's own "latest" install below — CODEX_CACHEBUST (only bumped by
+# claude-container when codex-version.txt says "latest") busts just this layer's
+# cache so the reinstall actually happens on every `-b` rebuild.
 COPY codex-version.txt /tmp/codex-version.txt
-RUN CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
+ARG CODEX_CACHEBUST=pinned
+RUN echo "codex-cachebust=${CODEX_CACHEBUST}" && \
+    CODEX_VERSION="$(tr -d '[:space:]' < /tmp/codex-version.txt)" && \
     if [ -n "$CODEX_VERSION" ]; then \
-      echo "$CODEX_VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { \
-        echo "ERROR: .claude-container.d/codex-version.txt must contain a bare version like 0.46.0 (got: $CODEX_VERSION)" >&2; exit 1; }; \
+      echo "$CODEX_VERSION" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+|latest)$' || { \
+        echo "ERROR: .claude-container.d/codex-version.txt must contain a bare version like 0.46.0 or the literal \"latest\" (got: $CODEX_VERSION)" >&2; exit 1; }; \
       command -v npm >/dev/null || { \
         echo "ERROR: codex-version.txt requires npm, which is not installed. Set .claude-container.d/node-version.txt (or add nodejs/npm to packages.txt)." >&2; exit 1; }; \
       npm install -g "@openai/codex@${CODEX_VERSION}"; \
