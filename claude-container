@@ -5,6 +5,31 @@ trap 'exit 1' INT
 
 BUILD=0
 CLEAN=0
+CHECK=0
+
+# --check モード用の状態（claude-container-ops#25）。通常起動時は常に0のままで、
+# guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
+CHECK_MODE=0
+CHECK_HAS_ERROR=0
+CHECK_HAS_WARN=0
+
+# fail-closed 終端の共通化。通常起動: 従来と同一（stderr へ全行出力し exit 1）。
+# --check: 出力して記録し return 1（呼び出し元はそこで打ち切り、ドライバは次のガードへ進む）。
+guard_fail() {
+  printf '%s\n' "$@" >&2
+  if [[ $CHECK_MODE -eq 1 ]]; then
+    CHECK_HAS_ERROR=1
+    return 1
+  fi
+  exit 1
+}
+
+# WARNING の共通化。通常起動: 従来どおり stderr 出力のみ。--check: 集計に反映。
+guard_warn() {
+  printf '%s\n' "$@" >&2
+  [[ $CHECK_MODE -eq 1 ]] && CHECK_HAS_WARN=1
+  return 0
+}
 
 usage() {
   cat <<EOF
@@ -18,6 +43,15 @@ Options:
                         for that project only, then exit
   --clean              (no directory) Remove all projects' images,
                         networks, and staged build contexts, then exit
+  --check [<directory>...]
+                        Diagnose without launching: report what a rebuild/
+                        launch would need (legacy vars, SECRETS_DIR layout,
+                        MCP approval state, etc.) for the given directories,
+                        or for every project in the launch ledger
+                        (~/.local/state/claude-container/projects) if none
+                        are given. Non-interactive; makes no writes. Exits
+                        non-zero if any project has a FAIL. -b is ignored
+                        with --check.
   -h, --help            Show this help message and exit
 EOF
 }
@@ -34,6 +68,10 @@ while [[ $# -gt 0 ]]; do
       CLEAN=1
       shift
       ;;
+    --check)
+      CHECK=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -46,6 +84,18 @@ while [[ $# -gt 0 ]]; do
 done
 
 RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
+
+# 起動台帳（claude-container-ops#25）。通常起動のたびにホスト絶対パスを記録し、
+# --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
+# MCP_APPROVAL_STORE と同じ流儀で、load_env_file() より前・プロジェクト側 env の
+# 影響を受けない位置で固定する。
+CC_STATE_DIR="$HOME/.local/state/claude-container"
+CC_LEDGER_FILE="$CC_STATE_DIR/projects"
+
+# ============================================================
+# 関数定義セクション（--check の dispatch がこれらより後にあるよう、
+# すべての関数をトップレベル実行文（下の dispatch セクション）より前に集約する）
+# ============================================================
 
 # 実在するプロジェクトイメージ（localhost/<project>_claude-auth-workspace）から
 # <project> を逆算し、イメージ・ネットワーク・ビルドコンテキストをまとめて削除する。
@@ -69,6 +119,8 @@ clean_all() {
   local approval_store="$HOME/.local/state/claude-container/mcp-approvals"
   echo "Removing MCP approval records: $approval_store"
   rm -rf "$approval_store" && echo "Removed." || echo "Not found, skipping."
+  echo "Removing launch ledger: $CC_LEDGER_FILE"
+  rm -f "$CC_LEDGER_FILE" && echo "Removed." || echo "Not found, skipping."
   echo "Pruning dangling images..."
   podman image prune -f
 }
@@ -83,27 +135,14 @@ clean_project() {
   rm -rf "$BUILD_CONTEXT_DIR" && echo "Removed." || echo "Not found, skipping."
   echo "Removing MCP approval record: $MCP_APPROVAL_RECORD"
   rm -f "$MCP_APPROVAL_RECORD" && echo "Removed." || echo "Not found, skipping."
+  if [[ -f "$CC_LEDGER_FILE" ]]; then
+    echo "Removing $WORKING_DIR from launch ledger: $CC_LEDGER_FILE"
+    grep -vxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" > "$CC_LEDGER_FILE.tmp" 2>/dev/null || true
+    mv "$CC_LEDGER_FILE.tmp" "$CC_LEDGER_FILE"
+  fi
   echo "Pruning dangling images..."
   podman image prune -f
 }
-
-set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
-
-# --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
-if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
-  clean_all
-  exit 0
-fi
-
-if [[ $# -eq 0 ]]; then
-  usage
-  exit 1
-fi
-
-echo "RUN DIR: $RUN_DIR"
-
-WORKING_DIR=$( cd "$1" > /dev/null && pwd )
-cd "$WORKING_DIR" || exit 1
 
 # ターゲットプロジェクトごとにイメージ名・ビルドコンテキストを分離するためのキー。
 # サニタイズ済み basename + 絶対パスの sha256 先頭8文字（衝突回避）。同名だが別パスの
@@ -119,28 +158,43 @@ compute_project_name() {
   PROJECT_NAME="${base}-${hash}"
   IMAGE_NAME="localhost/${PROJECT_NAME}_claude-auth-workspace"
 }
-compute_project_name
-echo "PROJECT: $PROJECT_NAME"
 
-# MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。load_env_file() より
-# 前でここに固定することで、プロジェクト側の .claude-container.d/env が HOME や
-# 将来追加されうる置き場所系の変数を書き換えても、記録パスは一切影響を受けない
-# （env 由来の値を信用しない設計。詳細は check_mcp_approval() のコメント参照）。
-MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
-MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
+# プロジェクトごとの固定パス群（MCP承認記録・設定ディレクトリ・ビルドコンテキスト）を
+# freeze する。load_env_file() より前に呼ぶことで、プロジェクト側の .claude-container.d/env
+# が HOME や将来追加されうる置き場所系の変数を書き換えても、これらのパスは一切影響を
+# 受けない（env 由来の値を信用しない設計。詳細は check_mcp_approval() のコメント参照）。
+# --check モード（claude-container-ops#25）でプロジェクトごとに再算出するため関数化。
+freeze_project_paths() {
+  # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
+  MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
+  MCP_APPROVAL_RECORD="$MCP_APPROVAL_STORE/$PROJECT_NAME"
+  # プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
+  PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
+  # ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
+  # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
+  # クリーンアップも不要にする。
+  BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
+}
 
-# プロジェクト側の apt/pip パッケージ上書き設定ディレクトリ
-PROJECT_CONF_DIR="$WORKING_DIR/.claude-container.d"
-# ビルドコンテキストのステージング先。プロジェクトごとに分離しつつ、mktemp のような
-# ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
-# クリーンアップも不要にする。
-BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
-
-# --clean <directory>: このプロジェクト分のみ削除して終了
-if [[ $CLEAN -eq 1 ]]; then
-  clean_project
-  exit 0
-fi
+# 起動台帳への記録（claude-container-ops#25）。--clean/--check では記録しない。
+# fail-closed ガードで停止する起動でも記録する（--check で診断したいのはまさに
+# そのプロジェクトのため）。台帳は補助台帳であり、記録失敗は起動を止めない
+# （fail-soft）。成功時は無出力（通常起動の出力を変えないため）。
+record_project_in_ledger() {
+  if ! mkdir -p "$CC_STATE_DIR" 2>/dev/null; then
+    echo "WARNING: 起動台帳ディレクトリ $CC_STATE_DIR を作成できません。--check での一括診断に使う起動台帳への記録をスキップします。" >&2
+    return 0
+  fi
+  chmod 700 "$CC_STATE_DIR" 2>/dev/null || true
+  if [[ -f "$CC_LEDGER_FILE" ]] && grep -qxF -- "$WORKING_DIR" "$CC_LEDGER_FILE" 2>/dev/null; then
+    return 0
+  fi
+  if ! printf '%s\n' "$WORKING_DIR" >> "$CC_LEDGER_FILE" 2>/dev/null; then
+    echo "WARNING: 起動台帳 $CC_LEDGER_FILE に記録できません。" >&2
+    return 0
+  fi
+  chmod 600 "$CC_LEDGER_FILE" 2>/dev/null || true
+}
 
 # プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば環境変数として取り込む。
 # source だと利用側プロジェクトのファイルがホスト上で任意コード実行できてしまうため、
@@ -154,52 +208,51 @@ load_env_file() {
   done < "$file"
 }
 
-ENV_FILE=""
-if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
-  ENV_FILE="$PROJECT_CONF_DIR/env"
-fi
-[[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
-
 # ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
 # 渡さない設計（トークンを podman inspect に露出させないため）。直書きに気づかず
 # 「動かない」で詰まるのを防ぐ誤用ガード。
-if [[ -n "$ENV_FILE" ]] && grep -qE '^GH_TOKEN=' "$ENV_FILE"; then
-  echo "WARNING: $ENV_FILE の GH_TOKEN=... はコンテナに渡されません。SECRETS_DIR 配下にトークンファイルを置いてください（README「GitHub トークンの配線」節）。" >&2
-fi
+guard_env_gh_token() {
+  if [[ -n "$ENV_FILE" ]] && grep -qE '^GH_TOKEN=' "$ENV_FILE"; then
+    guard_warn "WARNING: $ENV_FILE の GH_TOKEN=... はコンテナに渡されません。SECRETS_DIR 配下にトークンファイルを置いてください（README「GitHub トークンの配線」節）。"
+  fi
+}
 
 # legacy トークン変数（GH_TOKEN_FILE / GH_TOKEN_SECONDARY_FILE）は v4 で撤廃した
 # （claude-container#24）。後方互換エイリアスは持たないため、設定されていたら黙って
 # 無視せず fail-closed で起動を中止し、新レイアウトへの移行手順を案内する（検出した
 # 変数をまとめて1回で提示し、複数回起動してもう1個見つかる体験を避ける）。
-_legacy_vars_found=()
-[[ -n "${GH_TOKEN_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_FILE")
-[[ -n "${GH_TOKEN_SECONDARY_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_SECONDARY_FILE")
-if [[ ${#_legacy_vars_found[@]} -gt 0 ]]; then
-  echo "ERROR: 次の変数は廃止されました（後方互換なし、claude-container#24）: ${_legacy_vars_found[*]}" >&2
-  echo "移行手順:" >&2
-  echo "  1. $ENV_FILE（およびシェル環境）から上記変数の行を削除する" >&2
-  echo "  2. push・PR 用のメイン PAT は SECRETS_DIR 直下に GITHUB_MAIN_PAT として置く（chmod 600）。" >&2
-  echo "     コンテナ内で export されず、git push（askpass 自動配線）と" >&2
-  echo "     GH_TOKEN=\$(cat \"\$GITHUB_MAIN_PAT_FILE\") gh ... の明示読みでのみ使う" >&2
-  echo "  3. Issues/MCP 用 PAT は SECRETS_DIR/export/GITHUB_MCP_PAT として置く（chmod 600。コンテナ内で環境変数として export される）" >&2
-  echo "  4. $ENV_FILE に SECRETS_DIR=<ディレクトリ> を書く（chmod 700 推奨）" >&2
-  echo "注意: GH_TOKEN の自動 export は撤廃されました。gh は既定で未認証になります。" >&2
-  echo "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" >&2
-  exit 1
-fi
+guard_legacy_vars() {
+  local _legacy_vars_found=()
+  [[ -n "${GH_TOKEN_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_FILE")
+  [[ -n "${GH_TOKEN_SECONDARY_FILE:-}" ]] && _legacy_vars_found+=("GH_TOKEN_SECONDARY_FILE")
+  if [[ ${#_legacy_vars_found[@]} -gt 0 ]]; then
+    guard_fail \
+      "ERROR: 次の変数は廃止されました（後方互換なし、claude-container#24）: ${_legacy_vars_found[*]}" \
+      "移行手順:" \
+      "  1. $ENV_FILE（およびシェル環境）から上記変数の行を削除する" \
+      "  2. push・PR 用のメイン PAT は SECRETS_DIR 直下に GITHUB_MAIN_PAT として置く（chmod 600）。" \
+      "     コンテナ内で export されず、git push（askpass 自動配線）と" \
+      "     GH_TOKEN=\$(cat \"\$GITHUB_MAIN_PAT_FILE\") gh ... の明示読みでのみ使う" \
+      "  3. Issues/MCP 用 PAT は SECRETS_DIR/export/GITHUB_MCP_PAT として置く（chmod 600。コンテナ内で環境変数として export される）" \
+      "  4. $ENV_FILE に SECRETS_DIR=<ディレクトリ> を書く（chmod 700 推奨）" \
+      "注意: GH_TOKEN の自動 export は撤廃されました。gh は既定で未認証になります。" \
+      "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" || return 1
+  fi
+}
 
 # ホスト側 git 設定ファイルの参照（GITCONFIG_FILE）。任意設定のため未設定時は何もしない。
 # 設定済みでファイルが無い場合のみ起動を中止する（不存在パスを bind mount すると podman が
 # ホスト側に空ディレクトリを誤作成し、コンテナ内 ~/.gitconfig もディレクトリになって
 # git が壊れるため）。
-if [[ -n "${GITCONFIG_FILE:-}" ]]; then
-  GITCONFIG_FILE="${GITCONFIG_FILE/#\~\//$HOME/}"
-  export GITCONFIG_FILE
-  if [[ ! -f "$GITCONFIG_FILE" ]]; then
-    echo "ERROR: GITCONFIG_FILE=$GITCONFIG_FILE が見つかりません(存在しないか通常ファイルではありません)。起動を中止します。" >&2
-    exit 1
+guard_gitconfig_file() {
+  if [[ -n "${GITCONFIG_FILE:-}" ]]; then
+    GITCONFIG_FILE="${GITCONFIG_FILE/#\~\//$HOME/}"
+    export GITCONFIG_FILE
+    if [[ ! -f "$GITCONFIG_FILE" ]]; then
+      guard_fail "ERROR: GITCONFIG_FILE=$GITCONFIG_FILE が見つかりません(存在しないか通常ファイルではありません)。起動を中止します。" || return 1
+    fi
   fi
-fi
+}
 
 # 汎用シークレットディレクトリの参照（SECRETS_DIR）。任意設定のため未設定時は何もしない。
 # 設計原則（exposure 軸、claude-container#24）: 直下のファイルは export されない
@@ -208,59 +261,114 @@ fi
 # v3 以前とは直下/export の意味が逆転している。設定済みでディレクトリが無い場合は
 # 起動を中止する（GITCONFIG_FILE と同じ理由: 不存在パスを bind mount すると podman が
 # ホスト側に空ディレクトリを誤作成するため）。
-if [[ -n "${SECRETS_DIR:-}" ]]; then
-  SECRETS_DIR="${SECRETS_DIR/#\~\//$HOME/}"
-  export SECRETS_DIR
-  if [[ ! -d "$SECRETS_DIR" ]]; then
-    echo "ERROR: SECRETS_DIR=$SECRETS_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" >&2
-    exit 1
-  fi
-  # v3 以前のレイアウト（noexport/ サブディレクトリ）が残っていたら fail-closed で
-  # 停止する。新レイアウトでは直下が非export（旧 noexport/ 相当）になったため、残存
-  # させると設計意図が伝わらないまま、あるいは意図せず export 側に倒れるのを防ぐ。
-  if [[ -d "$SECRETS_DIR/noexport" ]]; then
-    echo "ERROR: $SECRETS_DIR/noexport が見つかりました。v4 で SECRETS_DIR のレイアウトが変わりました（claude-container#24）:" >&2
-    echo "  旧: 直下=export される / noexport/=export されない" >&2
-    echo "  新: 直下=export されない / export/=export される" >&2
-    echo "移行手順: noexport/ 配下のファイルを SECRETS_DIR 直下へ移動し（GIT_PUSH_TOKEN は GITHUB_MAIN_PAT へ改名）、" >&2
-    echo "  従来 SECRETS_DIR 直下にあった export 用ファイルは export/ サブディレクトリへ移動してください。" >&2
-    echo "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" >&2
-    exit 1
-  fi
-  secrets_dir_perm=$(stat -c '%a' "$SECRETS_DIR" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR" 2>/dev/null || echo "")
-  if [[ -n "$secrets_dir_perm" && "$secrets_dir_perm" != "700" ]]; then
-    echo "WARNING: SECRETS_DIR=$SECRETS_DIR のパーミッションが $secrets_dir_perm です。chmod 700 を推奨します。" >&2
-  fi
-  for secret_file in "$SECRETS_DIR"/*; do
-    [[ -f "$secret_file" ]] || continue
-    secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
-    if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
-      echo "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。" >&2
+guard_secrets_dir() {
+  if [[ -n "${SECRETS_DIR:-}" ]]; then
+    SECRETS_DIR="${SECRETS_DIR/#\~\//$HOME/}"
+    export SECRETS_DIR
+    if [[ ! -d "$SECRETS_DIR" ]]; then
+      guard_fail "ERROR: SECRETS_DIR=$SECRETS_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
     fi
-    # 直下は export されない（新レイアウト）。export 前提のファイル名が直下に
-    # 置かれていると export/ への移動忘れの可能性が高いため気づけるよう注意喚起する
-    # （ブロックはしない — 直下＝非exportは有効な選択でもあるため）。
-    if [[ "$(basename "$secret_file")" == "GITHUB_MCP_PAT" ]]; then
-      echo "WARNING: SECRETS_DIR/GITHUB_MCP_PAT は直下に置かれているため export されません（v4〜）。MCP・gh CLI から使うには export/GITHUB_MCP_PAT へ移動してください。" >&2
+    # v3 以前のレイアウト（noexport/ サブディレクトリ）が残っていたら fail-closed で
+    # 停止する。新レイアウトでは直下が非export（旧 noexport/ 相当）になったため、残存
+    # させると設計意図が伝わらないまま、あるいは意図せず export 側に倒れるのを防ぐ。
+    if [[ -d "$SECRETS_DIR/noexport" ]]; then
+      guard_fail \
+        "ERROR: $SECRETS_DIR/noexport が見つかりました。v4 で SECRETS_DIR のレイアウトが変わりました（claude-container#24）:" \
+        "  旧: 直下=export される / noexport/=export されない" \
+        "  新: 直下=export されない / export/=export される" \
+        "移行手順: noexport/ 配下のファイルを SECRETS_DIR 直下へ移動し（GIT_PUSH_TOKEN は GITHUB_MAIN_PAT へ改名）、" \
+        "  従来 SECRETS_DIR 直下にあった export 用ファイルは export/ サブディレクトリへ移動してください。" \
+        "詳細: README.md「GitHub トークンの配線」節。起動を中止します。" || return 1
     fi
-  done
-  # export/ サブディレクトリ（コンテナ内で export されるファイル秘密の規約、
-  # README「SECRETS_DIR」節参照）も同じ検証を行う。上のループは [[ -f ]] 判定で
-  # サブディレクトリ自体を黙ってスキップするため、ここで個別に確認する。
-  if [[ -d "$SECRETS_DIR/export" ]]; then
-    export_dir_perm=$(stat -c '%a' "$SECRETS_DIR/export" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR/export" 2>/dev/null || echo "")
-    if [[ -n "$export_dir_perm" && "$export_dir_perm" != "700" ]]; then
-      echo "WARNING: SECRETS_DIR/export のパーミッションが $export_dir_perm です。chmod 700 を推奨します。" >&2
+    local secrets_dir_perm
+    secrets_dir_perm=$(stat -c '%a' "$SECRETS_DIR" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR" 2>/dev/null || echo "")
+    if [[ -n "$secrets_dir_perm" && "$secrets_dir_perm" != "700" ]]; then
+      guard_warn "WARNING: SECRETS_DIR=$SECRETS_DIR のパーミッションが $secrets_dir_perm です。chmod 700 を推奨します。"
     fi
-    for secret_file in "$SECRETS_DIR/export"/*; do
+    local secret_file secret_file_perm
+    for secret_file in "$SECRETS_DIR"/*; do
       [[ -f "$secret_file" ]] || continue
       secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
       if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
-        echo "WARNING: SECRETS_DIR/export 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。" >&2
+        guard_warn "WARNING: SECRETS_DIR 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。"
+      fi
+      # 直下は export されない（新レイアウト）。export 前提のファイル名が直下に
+      # 置かれていると export/ への移動忘れの可能性が高いため気づけるよう注意喚起する
+      # （ブロックはしない — 直下＝非exportは有効な選択でもあるため）。
+      if [[ "$(basename "$secret_file")" == "GITHUB_MCP_PAT" ]]; then
+        guard_warn "WARNING: SECRETS_DIR/GITHUB_MCP_PAT は直下に置かれているため export されません（v4〜）。MCP・gh CLI から使うには export/GITHUB_MCP_PAT へ移動してください。"
       fi
     done
+    # export/ サブディレクトリ（コンテナ内で export されるファイル秘密の規約、
+    # README「SECRETS_DIR」節参照）も同じ検証を行う。上のループは [[ -f ]] 判定で
+    # サブディレクトリ自体を黙ってスキップするため、ここで個別に確認する。
+    if [[ -d "$SECRETS_DIR/export" ]]; then
+      local export_dir_perm
+      export_dir_perm=$(stat -c '%a' "$SECRETS_DIR/export" 2>/dev/null || stat -f '%Lp' "$SECRETS_DIR/export" 2>/dev/null || echo "")
+      if [[ -n "$export_dir_perm" && "$export_dir_perm" != "700" ]]; then
+        guard_warn "WARNING: SECRETS_DIR/export のパーミッションが $export_dir_perm です。chmod 700 を推奨します。"
+      fi
+      for secret_file in "$SECRETS_DIR/export"/*; do
+        [[ -f "$secret_file" ]] || continue
+        secret_file_perm=$(stat -c '%a' "$secret_file" 2>/dev/null || stat -f '%Lp' "$secret_file" 2>/dev/null || echo "")
+        if [[ -n "$secret_file_perm" && "$secret_file_perm" != "600" ]]; then
+          guard_warn "WARNING: SECRETS_DIR/export 内の $(basename "$secret_file") のパーミッションが $secret_file_perm です。chmod 600 を推奨します。"
+        fi
+      done
+    fi
   fi
-fi
+}
+
+# MCP監査ゲートの状態判定（読み取り専用部分。claude-container-ops#25で check_mcp_approval()
+# から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
+# 実処理が同一ロジックを共有するために分離した。
+# 迂回防止の設計:
+#   - ハッシュの正規化 jq フィルタは entrypoint.sh の照合ロジックと同一でなければ
+#     ならない（変更時は両ファイルを同期すること）。
+compute_mcp_state() {
+  MCP_STATE=""
+  MCP_CURRENT_HASH=""
+  MCP_STDIO_JSON=""
+
+  if ! command -v jq >/dev/null 2>&1; then
+    MCP_STATE="nojq"
+    return 0
+  fi
+
+  local mcp_config="$WORKING_DIR/.mcp.json"
+  if [[ ! -f "$mcp_config" ]]; then
+    MCP_STATE="nofile"
+    return 0
+  fi
+
+  local stdio_json
+  if ! stdio_json=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$mcp_config" 2>/dev/null); then
+    MCP_STATE="parsefail"
+    return 0
+  fi
+
+  if [[ "$stdio_json" == "[]" ]]; then
+    MCP_STATE="none"
+    return 0
+  fi
+
+  local current_hash recorded_hash=""
+  # entrypoint.sh 側は `jq ... | sha256sum`（jqの出力に末尾改行あり）で直接計算するため、
+  # ここも printf '%s\n' で末尾改行を復元してから計算する（'%s' だと $() の改行除去により
+  # 同一入力でも異なるハッシュになり、TOFU照合が常に不一致になるバグを検証中に発見した）。
+  current_hash=$(printf '%s\n' "$stdio_json" | sha256sum | cut -c1-64)
+  if [[ -f "$MCP_APPROVAL_RECORD" ]]; then
+    recorded_hash=$(cat "$MCP_APPROVAL_RECORD" 2>/dev/null || echo "")
+  fi
+
+  MCP_CURRENT_HASH="$current_hash"
+  MCP_STDIO_JSON="$stdio_json"
+  if [[ -n "$recorded_hash" && "$recorded_hash" == "$current_hash" ]]; then
+    MCP_STATE="approved"
+  else
+    MCP_STATE="pending"
+  fi
+}
 
 # MCP監査ゲートのTOFU（Trust On First Use）＋変更検知（claude-container#28）。
 # .mcp.json のstdio型サーバー定義（entrypoint.sh側のTTY確認対象）が前回承認時から
@@ -275,75 +383,53 @@ fi
 #     （compose.yml の ${MCP_APPROVAL_FILE:-/dev/null}）は env 経由の値を一切
 #     参照しないため、プロジェクト側が env に MCP_APPROVAL_FILE を書いても無視される。
 #   - 記録ファイルは compose.yml 側で :ro マウントする。コンテナ内から改変不可。
-#   - ハッシュの正規化 jq フィルタは entrypoint.sh の照合ロジックと同一でなければ
-#     ならない（変更時は両ファイルを同期すること）。
 check_mcp_approval() {
   MCP_APPROVAL_FILE=""
+  compute_mcp_state
 
-  if ! command -v jq >/dev/null 2>&1; then
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-
-  local mcp_config="$WORKING_DIR/.mcp.json"
-  if [[ ! -f "$mcp_config" ]]; then
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-
-  local stdio_json
-  if ! stdio_json=$(jq -S -c '[(.mcpServers // {}) | to_entries[] | select(.value.command != null)]' "$mcp_config" 2>/dev/null); then
-    echo "WARNING: $mcp_config の解析に失敗しました。事前承認をスキップします（コンテナ内のMCP監査ゲートが起動可否を判定します）。" >&2
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-
-  if [[ "$stdio_json" == "[]" ]]; then
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-
-  local current_hash recorded_hash=""
-  # entrypoint.sh 側は `jq ... | sha256sum`（jqの出力に末尾改行あり）で直接計算するため、
-  # ここも printf '%s\n' で末尾改行を復元してから計算する（'%s' だと $() の改行除去により
-  # 同一入力でも異なるハッシュになり、TOFU照合が常に不一致になるバグを検証中に発見した）。
-  current_hash=$(printf '%s\n' "$stdio_json" | sha256sum | cut -c1-64)
-  if [[ -f "$MCP_APPROVAL_RECORD" ]]; then
-    recorded_hash=$(cat "$MCP_APPROVAL_RECORD" 2>/dev/null || echo "")
-  fi
-
-  if [[ -n "$recorded_hash" && "$recorded_hash" == "$current_hash" ]]; then
-    echo "INFO: MCP audit: stdio servers pre-approved (hash match); skipping confirmation" >&2
-    MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-
-  echo "WARNING: $mcp_config declares stdio-type MCP server(s) that changed since last approval (or have never been approved). Their code runs immediately at session start and can read all exported secrets:" >&2
-  echo "$stdio_json" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' >&2
-  printf 'Allow these MCP servers to start and remember this approval? [y/N] ' >&2
-  local mcp_confirm=""
-  if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
-    echo "INFO: no interactive TTY available here; deferring confirmation to the in-container MCP audit gate." >&2
-    export MCP_APPROVAL_FILE
-    return 0
-  fi
-  case "$mcp_confirm" in
-    y | Y | yes | YES | Yes)
-      mkdir -p "$MCP_APPROVAL_STORE"
-      chmod 700 "$MCP_APPROVAL_STORE"
-      printf '%s' "$current_hash" > "$MCP_APPROVAL_RECORD"
-      chmod 600 "$MCP_APPROVAL_RECORD"
+  case "$MCP_STATE" in
+    nojq | nofile | none)
+      export MCP_APPROVAL_FILE
+      return 0
+      ;;
+    parsefail)
+      echo "WARNING: $WORKING_DIR/.mcp.json の解析に失敗しました。事前承認をスキップします（コンテナ内のMCP監査ゲートが起動可否を判定します）。" >&2
+      export MCP_APPROVAL_FILE
+      return 0
+      ;;
+    approved)
+      echo "INFO: MCP audit: stdio servers pre-approved (hash match); skipping confirmation" >&2
       MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
       export MCP_APPROVAL_FILE
+      return 0
       ;;
-    *)
-      echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
-      exit 1
+    pending)
+      echo "WARNING: $WORKING_DIR/.mcp.json declares stdio-type MCP server(s) that changed since last approval (or have never been approved). Their code runs immediately at session start and can read all exported secrets:" >&2
+      echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' >&2
+      printf 'Allow these MCP servers to start and remember this approval? [y/N] ' >&2
+      local mcp_confirm=""
+      if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
+        echo "INFO: no interactive TTY available here; deferring confirmation to the in-container MCP audit gate." >&2
+        export MCP_APPROVAL_FILE
+        return 0
+      fi
+      case "$mcp_confirm" in
+        y | Y | yes | YES | Yes)
+          mkdir -p "$MCP_APPROVAL_STORE"
+          chmod 700 "$MCP_APPROVAL_STORE"
+          printf '%s' "$MCP_CURRENT_HASH" > "$MCP_APPROVAL_RECORD"
+          chmod 600 "$MCP_APPROVAL_RECORD"
+          MCP_APPROVAL_FILE="$MCP_APPROVAL_RECORD"
+          export MCP_APPROVAL_FILE
+          ;;
+        *)
+          echo "ERROR: MCP stdio server confirmation declined; refusing to start" >&2
+          exit 1
+          ;;
+      esac
       ;;
   esac
 }
-check_mcp_approval
 
 # entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
@@ -412,6 +498,208 @@ stage_build_context() {
     exit 1
   fi
 }
+
+# --check モード（claude-container-ops#25）。1プロジェクトを診断する。呼び出し元
+# （run_check_mode）がサブシェル内で呼ぶことを前提とする（`local` の効かない
+# グローバル変数の書き換え — WORKING_DIR・PROJECT_NAME・ENV_FILE 等 — がこの
+# プロセス内に閉じ、他プロジェクトの診断や親シェルの状態を汚染しないため）。
+check_one_project() {
+  set -e
+  CHECK_MODE=1
+  CHECK_HAS_ERROR=0
+  CHECK_HAS_WARN=0
+  local dir="$1" from_ledger="$2"
+
+  if ! WORKING_DIR=$(cd "$dir" 2>/dev/null && pwd); then
+    echo "[FAIL] ディレクトリが存在しません: $dir"
+    if [[ "$from_ledger" -eq 1 ]]; then
+      echo "  (起動台帳に記録がありますが実体が見つかりません。不要なら $CC_LEDGER_FILE を手動編集してください)"
+    fi
+    return 20
+  fi
+  cd "$WORKING_DIR"
+  echo "[OK]   プロジェクトディレクトリ実在: $WORKING_DIR"
+
+  compute_project_name
+  echo "  PROJECT_NAME: $PROJECT_NAME"
+  freeze_project_paths
+
+  ENV_FILE=""
+  if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
+    ENV_FILE="$PROJECT_CONF_DIR/env"
+    echo "[OK]   .claude-container.d/env あり"
+    load_env_file "$ENV_FILE"
+  else
+    echo "[INFO] .claude-container.d/env なし（ランタイム設定なしで起動されます）"
+  fi
+
+  guard_env_gh_token || true
+  guard_legacy_vars || true
+  guard_gitconfig_file || true
+  guard_secrets_dir || true
+
+  local file
+  for file in packages.txt requirements.txt allowed-domains.txt; do
+    if [[ -f "$PROJECT_CONF_DIR/$file" ]]; then
+      echo "[OK]   $file: プロジェクト側設定あり"
+    else
+      CHECK_HAS_WARN=1
+      echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file not found; using claude-container's generic empty fallback ($file). If this project needs packages/domains here, create .claude-container.d/$file."
+    fi
+  done
+
+  if ! command -v podman >/dev/null 2>&1; then
+    echo "[SKIP] podman が見つからないためイメージ確認をスキップ"
+  elif podman image exists "$IMAGE_NAME" 2>/dev/null; then
+    echo "[OK]   イメージ既ビルド: $IMAGE_NAME"
+  else
+    echo "[INFO] イメージ未ビルド: $IMAGE_NAME（初回起動時に自動ビルドされます。破壊的変更後は -b を推奨）"
+  fi
+
+  compute_mcp_state
+  case "$MCP_STATE" in
+    nojq)
+      echo "[SKIP] jq が見つからないため MCP 監査ゲートの事前承認確認をスキップ"
+      ;;
+    nofile | none)
+      echo "[OK]   MCP監査ゲート: 対象の stdio 型サーバーなし"
+      ;;
+    parsefail)
+      CHECK_HAS_WARN=1
+      echo "[WARN] WARNING: $WORKING_DIR/.mcp.json の解析に失敗しました。"
+      ;;
+    approved)
+      echo "[OK]   MCP監査ゲート: stdio 型サーバー承認済み（ハッシュ一致）"
+      ;;
+    pending)
+      echo "[INFO] MCP監査ゲート: stdio 型サーバーが未承認/変更あり。初回起動時に確認プロンプトが出ます"
+      ;;
+  esac
+
+  if [[ $CHECK_HAS_ERROR -eq 1 ]]; then
+    echo "→ 結果: FAIL"
+    return 20
+  elif [[ $CHECK_HAS_WARN -eq 1 ]]; then
+    echo "→ 結果: WARN"
+    return 10
+  else
+    echo "→ 結果: PASS"
+    return 0
+  fi
+}
+
+# --check のドライバ。引数があれば各ディレクトリを、なければ起動台帳
+# （$CC_LEDGER_FILE）の全プロジェクトを診断する。非対話・書き込みなし。
+run_check_mode() {
+  local -a targets=()
+  local -a from_ledger_flags=()
+  if [[ $# -gt 0 ]]; then
+    local d
+    for d in "$@"; do
+      targets+=("$d")
+      from_ledger_flags+=(0)
+    done
+  else
+    if [[ ! -s "$CC_LEDGER_FILE" ]]; then
+      echo "起動台帳が空です（$CC_LEDGER_FILE）。まだ通常起動が記録されていません。--check <directory> で個別指定できます。"
+      return 0
+    fi
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      targets+=("$line")
+      from_ledger_flags+=(1)
+    done < "$CC_LEDGER_FILE"
+  fi
+
+  local pass=0 warn=0 fail=0
+  local -a fail_names=()
+  local i dir from_ledger rc
+  for i in "${!targets[@]}"; do
+    dir="${targets[$i]}"
+    from_ledger="${from_ledger_flags[$i]}"
+    echo "=== $dir ==="
+    set +e
+    ( check_one_project "$dir" "$from_ledger" ) 2>&1
+    rc=$?
+    set -e
+    case "$rc" in
+      0) pass=$((pass + 1)) ;;
+      10) warn=$((warn + 1)) ;;
+      20) fail=$((fail + 1)); fail_names+=("$dir") ;;
+      *) fail=$((fail + 1)); fail_names+=("$dir (unexpected exit $rc)") ;;
+    esac
+    echo
+  done
+
+  echo "==== サマリ ===="
+  echo "検査対象: ${#targets[@]} プロジェクト（起動台帳: $CC_LEDGER_FILE）"
+  echo "PASS: $pass   WARN: $warn   FAIL: $fail"
+  if [[ ${#fail_names[@]} -gt 0 ]]; then
+    echo "リビルド前に対応が必要:"
+    local n
+    for n in "${fail_names[@]}"; do
+      echo "  - $n"
+    done
+    return 1
+  fi
+  return 0
+}
+
+# ============================================================
+# dispatch（トップレベル実行文。相対順序は関数化前と同一に保つ）
+# ============================================================
+
+set -- ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+
+# --clean をディレクトリ引数なしで呼んだ場合は全プロジェクト分を削除して終了
+if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
+  clean_all
+  exit 0
+fi
+
+# --check（claude-container-ops#25）: 引数なしでも起動台帳を全件診断できる必要が
+# あるため、「引数なし→usage」判定より前で dispatch する。
+if [[ $CHECK -eq 1 ]]; then
+  run_check_mode ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
+  exit $?
+fi
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 1
+fi
+
+echo "RUN DIR: $RUN_DIR"
+
+WORKING_DIR=$( cd "$1" > /dev/null && pwd )
+cd "$WORKING_DIR" || exit 1
+
+compute_project_name
+echo "PROJECT: $PROJECT_NAME"
+
+freeze_project_paths
+
+# --clean <directory>: このプロジェクト分のみ削除して終了
+if [[ $CLEAN -eq 1 ]]; then
+  clean_project
+  exit 0
+fi
+
+record_project_in_ledger
+
+ENV_FILE=""
+if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
+  ENV_FILE="$PROJECT_CONF_DIR/env"
+fi
+[[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
+
+guard_env_gh_token
+guard_legacy_vars
+guard_gitconfig_file
+guard_secrets_dir
+
+check_mcp_approval
 
 # compose がビルドコンテキストとして参照するため、ディレクトリ自体は常に存在させる
 mkdir -p "$BUILD_CONTEXT_DIR"
