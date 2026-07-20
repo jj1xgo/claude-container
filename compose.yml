@@ -47,6 +47,15 @@ services:
       # :ro 必須 — コンテナ内から credential.helper 等を書き換えられるとホスト側
       # 任意コマンド実行につながるため。entrypoint.sh 側の処理は不要（git が直接読む）。
       - ${GITCONFIG_FILE:-/dev/null}:/home/node/.gitconfig:ro
+      # Codex CLI の認証情報ディレクトリのオプトインマウント（claude-container-ops#27）。
+      # auth.json はセッション中にアクセストークンが自動リフレッシュされホストへ書き戻される
+      # ため rw（:ro なし、GITCONFIG_FILE とは逆）。ホストの実 ~/.codex を直接指すと、
+      # コンテナ側コードが config.toml（notify フック等）を汚染しホストで codex 起動時に
+      # 任意コマンド実行につながるため、CODEX_DIR には専用ディレクトリ（例: ~/.codex-container）
+      # を設定する前提（README「利用側プロジェクトの設定」節参照）。未設定時は /dev/null
+      # （SECRETS_DIR と同じオプトインパターン）。entrypoint.sh 側の特別処理は不要
+      # （codex CLI が直接読む、gitconfig と同型）。
+      - ${CODEX_DIR:-/dev/null}:/home/node/.codex
       # MCP監査ゲートのTOFU承認記録（claude-container#28）。ホスト側 claude-container
       # スクリプトが人間の対話承認後にのみ書き込む1行ハッシュファイル。:ro必須 —
       # コンテナ内から書き換えられると次回起動の自動承認を偽装できてしまうため。

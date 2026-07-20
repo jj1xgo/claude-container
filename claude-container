@@ -319,6 +319,36 @@ guard_secrets_dir() {
   fi
 }
 
+# Codex CLI の認証情報ディレクトリの参照（CODEX_DIR）。任意設定のため未設定時は何もしない。
+# auth.json はセッション中にトークンが自動リフレッシュされホストへ書き戻される必要があるため
+# rw マウント（compose.yml 側で :ro を付けない）。実ホストの ~/.codex を直接指すと、コンテナ側
+# コードが config.toml（notify フック・MCPサーバー定義）を汚染し、ホストで codex 起動時に
+# 任意コマンドが実行される経路が生じるため、専用ディレクトリ（例: ~/.codex-container）を
+# 前提とする（README「利用側プロジェクトの設定」節参照）。設定済みでディレクトリが無い場合は
+# 起動を中止する（GITCONFIG_FILE/SECRETS_DIR と同じ理由: 不存在パスを bind mount すると
+# podman がホスト側に空ディレクトリを誤作成するため）。claude-container-ops#27。
+guard_codex_dir() {
+  if [[ -n "${CODEX_DIR:-}" ]]; then
+    CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
+    export CODEX_DIR
+    if [[ ! -d "$CODEX_DIR" ]]; then
+      guard_fail "ERROR: CODEX_DIR=$CODEX_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+    local codex_dir_perm
+    codex_dir_perm=$(stat -c '%a' "$CODEX_DIR" 2>/dev/null || stat -f '%Lp' "$CODEX_DIR" 2>/dev/null || echo "")
+    if [[ -n "$codex_dir_perm" && "$codex_dir_perm" != "700" ]]; then
+      guard_warn "WARNING: CODEX_DIR=$CODEX_DIR のパーミッションが $codex_dir_perm です。chmod 700 を推奨します。"
+    fi
+    if [[ -f "$CODEX_DIR/auth.json" ]]; then
+      local auth_json_perm
+      auth_json_perm=$(stat -c '%a' "$CODEX_DIR/auth.json" 2>/dev/null || stat -f '%Lp' "$CODEX_DIR/auth.json" 2>/dev/null || echo "")
+      if [[ -n "$auth_json_perm" && "$auth_json_perm" != "600" ]]; then
+        guard_warn "WARNING: $CODEX_DIR/auth.json のパーミッションが $auth_json_perm です。chmod 600 を推奨します。"
+      fi
+    fi
+  fi
+}
+
 # MCP監査ゲートの状態判定（読み取り専用部分。claude-container-ops#25で check_mcp_approval()
 # から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
 # 実処理が同一ロジックを共有するために分離した。
@@ -469,6 +499,14 @@ stage_build_context() {
     : > "$BUILD_CONTEXT_DIR/node-version.txt"
   fi
 
+  # codex-version.txt も node-version.txt と同じ任意機能の流儀（無いのが正常、
+  # WARNING を出さない）。claude-container-ops#27。
+  if [[ -f "$PROJECT_CONF_DIR/codex-version.txt" ]]; then
+    cp "$PROJECT_CONF_DIR/codex-version.txt" "$BUILD_CONTEXT_DIR/codex-version.txt"
+  else
+    : > "$BUILD_CONTEXT_DIR/codex-version.txt"
+  fi
+
   # 防御的アサーション: env（ランタイム設定）が万一ビルドコンテキストに紛れ込んでいたら
   # 即座にビルドを止める。将来上記ループがワイルドカードコピーに書き換えられた場合の
   # リグレッション（ホスト固有パスのイメージ焼き込み）を防ぐための安全網。
@@ -537,6 +575,7 @@ check_one_project() {
   guard_legacy_vars || true
   guard_gitconfig_file || true
   guard_secrets_dir || true
+  guard_codex_dir || true
 
   local file
   for file in packages.txt requirements.txt allowed-domains.txt; do
@@ -698,6 +737,7 @@ guard_env_gh_token
 guard_legacy_vars
 guard_gitconfig_file
 guard_secrets_dir
+guard_codex_dir
 
 check_mcp_approval
 
