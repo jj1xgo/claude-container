@@ -40,9 +40,13 @@ done
 # 既存の人間ゲートの対象外になる。セッション開始と同時に人間・モデルどちらの
 # 判断も挟まず実行され、export 済みトークン等を読めてしまうため、ここで TTY
 # 確認を挟む（http/sse 型は接続先をファイアウォールが審査するため対象外）。
-# 環境変数による opt-out は意図的に設けない: .claude-container.d/env は全キー
-# 無条件で export されるため、悪意あるリポジトリ自身が opt-out 変数を書けて
-# しまいゲートとして無意味になる（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。
+# 環境変数による opt-out は設けない。根拠は「.claude-container.d/env が信頼できない」
+# ではなく、このゲートが対象とする帰結（セッション開始と同時の任意コード実行）に
+# 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
+# モデル」節、claude-container-ops#29）。env は全キー無条件で export されるため、
+# opt-out 変数を設ければそのプロジェクト自身の env に書くだけでゲートが無効化できて
+# しまう（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
+# 信頼入力として扱っており（README同節）、この判断は env 全般の信頼性を疑うものではない。
 MCP_CONFIG=/workspace/.mcp.json
 if [ -f "$MCP_CONFIG" ]; then
   if ! stdio_servers=$(jq -r '

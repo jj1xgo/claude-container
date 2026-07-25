@@ -9,6 +9,7 @@ services:
         CACHEBUST: ${CACHEBUST:-unknown}
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         CODEX_CACHEBUST: ${CODEX_CACHEBUST:-pinned}
+        ASSET_HASH: ${ASSET_HASH:-unknown}
     stdin_open: true
     tty: true
     userns_mode: keep-id

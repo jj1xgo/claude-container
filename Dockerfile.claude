@@ -137,6 +137,7 @@ RUN mkdir -p /workspace /home/node/.claude && \
 # or the script at runtime. node may only run this exact script via sudo.
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY allowed-domains.txt /etc/claude-container/allowed-domains.txt
+COPY allowed-ports.txt /etc/claude-container/allowed-ports.txt
 RUN chmod 755 /usr/local/bin/init-firewall.sh && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
@@ -175,6 +176,16 @@ RUN echo "cachebust=${CACHEBUST}" \
 
 # Add ~/.local/bin to PATH (where native installer places the symlink)
 ENV PATH=/home/node/.local/bin:$PATH
+
+# Boundary-asset drift detection (claude-container-ops#30): the hash of
+# entrypoint.sh/init-firewall.sh/etc. that claude-container computed from its
+# current source at launch time, baked in as a label so a later launch can
+# detect that those sources changed since this image was built. Placed after
+# the CACHEBUST-consuming RUN above, so adding this label costs no extra
+# cache invalidation (everything from CACHEBUST onward is already busted on
+# every `-b` run).
+ARG ASSET_HASH=unknown
+LABEL claude-container.asset-hash="${ASSET_HASH}"
 
 # tini is PID1; entrypoint.sh (and the claude process it execs into) runs as its child.
 ENTRYPOINT ["/usr/bin/tini", "--"]

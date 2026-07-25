@@ -21,6 +21,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 ALLOWED_DOMAINS_FILE=/etc/claude-container/allowed-domains.txt
+ALLOWED_PORTS_FILE=/etc/claude-container/allowed-ports.txt
 CHAIN=CLAUDE_EGRESS
 # Shortest observed CDN TTL was 13s; refresh slightly slower than that so a
 # missed tick is caught by the next one rather than by chasing every wobble.
@@ -42,6 +43,38 @@ if [ -n "${1:-}" ]; then
   fi
 fi
 
+# Ports that CHAIN-routed ACCEPT rules (add_cidr/add_cidr_tagged below) permit
+# on an otherwise-allowed IP (claude-container-ops#31). Read once here so both
+# `init` and `--refresh-domains` modes see the same value. Does NOT apply to
+# the DNS resolver rules or the host-network rule in full_init() — those bypass
+# CHAIN entirely and stay unrestricted (see the comment where CHAIN is created).
+resolve_allowed_ports() {
+  local -a ports=()
+  local raw
+  if [ -f "$ALLOWED_PORTS_FILE" ]; then
+    while IFS= read -r raw; do
+      raw="${raw%%#*}"
+      raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+      [ -n "$raw" ] || continue
+      if [[ ! "$raw" =~ ^[0-9]{1,5}(:[0-9]{1,5})?$ ]]; then
+        echo "ERROR: invalid entry in $ALLOWED_PORTS_FILE: '$raw' (expected a port or port:port range, e.g. 443 or 8000:8010)" >&2
+        exit 1
+      fi
+      ports+=("$raw")
+    done < "$ALLOWED_PORTS_FILE"
+  fi
+  if [ "${#ports[@]}" -eq 0 ]; then
+    ports=(443 22)
+  fi
+  if [ "${#ports[@]}" -gt 15 ]; then
+    echo "ERROR: $ALLOWED_PORTS_FILE lists ${#ports[@]} ports/ranges; iptables' multiport match supports at most 15" >&2
+    exit 1
+  fi
+  local IFS=,
+  ALLOWED_PORTS="${ports[*]}"
+}
+resolve_allowed_ports
+
 # Plain per-CIDR ACCEPT, no generation tag. Used for ranges that don't rotate
 # on a short TTL (GitHub's build-time snapshot) and so never need pruning.
 add_cidr() {
@@ -50,7 +83,7 @@ add_cidr() {
     echo "Skipping non-IPv4 range from $origin: $cidr"
     return 0
   fi
-  iptables -A "$CHAIN" -d "$cidr" -j ACCEPT
+  iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -j ACCEPT
 }
 
 # Same as add_cidr, but tags the rule with domain+generation so
@@ -67,7 +100,7 @@ add_cidr_tagged() {
     echo "ERROR: refusing to tag rule with unsafe domain string: $domain" >&2
     return 1
   fi
-  iptables -A "$CHAIN" -d "$cidr" -m comment --comment "domain=${domain};gen=${generation}" -j ACCEPT
+  iptables -A "$CHAIN" -d "$cidr" -p tcp -m multiport --dports "$ALLOWED_PORTS" -m comment --comment "domain=${domain};gen=${generation}" -j ACCEPT
 }
 
 # Adds a fresh tagged rule for (domain, ip); if a rule for that exact pair
@@ -77,9 +110,12 @@ add_cidr_tagged() {
 # throughout — no flush, no gap.
 # NOTE: assumes `iptables -S` renders a bare host as "-d IP/32" and that,
 # after stripping the leading "-N CHAIN" line, grep's 1-indexed match line
-# number equals the rule's position for `iptables -D CHAIN <N>`. Confirm this
-# empirically against the actual iptables/kernel version in use (see plan's
-# verification steps) before relying on it in production.
+# number equals the rule's position for `iptables -D CHAIN <N>`. Confirmed
+# empirically (iptables 1.8.11/nf_tables) that -S always emits core fields
+# (-A CHAIN -d IP/32 -p ...) before match-extension flags (-m multiport,
+# -m comment) regardless of the order they were passed on the add_cidr* call,
+# so the "-d ${ip}/32 " grep below keeps matching after the port restriction
+# (claude-container-ops#31) was added to add_cidr_tagged.
 add_or_touch_domain_ip() {
   local ip="$1" domain="$2" generation="$3"
   local existing_idx
@@ -199,7 +235,11 @@ full_init() {
   iptables -t mangle -F
   iptables -t mangle -X
 
-  # Allowlist chain: one ACCEPT per allowed CIDR/IP
+  # Allowlist chain: one ACCEPT per allowed CIDR/IP, restricted to $ALLOWED_PORTS
+  # (add_cidr/add_cidr_tagged, claude-container-ops#31). This restriction covers
+  # GitHub CIDRs and the tagged per-domain rules ONLY. The DNS resolver rules
+  # below and the host-network rule further down bypass CHAIN entirely (they're
+  # appended straight to INPUT/OUTPUT) and stay port-unrestricted.
   iptables -N "$CHAIN"
 
   # Loopback and established connections
@@ -247,14 +287,16 @@ full_init() {
     exit 1
   fi
 
-  # Host network (gateway /24), for host-side services
+  # Host network (gateway only), for host-side services. Scoped to the single
+  # gateway IP, not its /24 (claude-container-ops#31) — no port restriction
+  # (this bypasses CHAIN, see the note where CHAIN is created above).
   local host_ip host_network
   host_ip=$(ip route | awk '/^default/ {print $3; exit}')
   if [ -z "$host_ip" ]; then
     echo "ERROR: Failed to detect host IP" >&2
     exit 1
   fi
-  host_network="${host_ip%.*}.0/24"
+  host_network="${host_ip}/32"
   echo "Host network detected as: $host_network"
   iptables -A INPUT -s "$host_network" -j ACCEPT
   iptables -A OUTPUT -d "$host_network" -j ACCEPT
@@ -330,6 +372,18 @@ full_init() {
     exit 1
   fi
   echo "Verification passed - able to reach https://api.anthropic.com as expected"
+  # Confirm the port restriction (claude-container-ops#31) actually blocks a
+  # non-allowed port on an otherwise-allowed IP. github.com genuinely listens
+  # on port 80 (HTTP -> HTTPS redirect), so a failure here can't be confused
+  # with "the remote wasn't listening" — it has to be our own rule rejecting
+  # it. This only exercises the CHAIN-scoped restriction (GitHub CIDRs /
+  # tagged domain rules); DNS(53) and the host-network rule bypass CHAIN
+  # entirely and are not covered by this check.
+  if timeout 5 bash -c 'exec 3<>/dev/tcp/api.github.com/80' 2>/dev/null; then
+    echo "ERROR: Firewall verification failed - was able to reach api.github.com:80 (port restriction not enforced)" >&2
+    exit 1
+  fi
+  echo "Verification passed - unable to reach api.github.com:80 as expected (port restriction enforced)"
 }
 
 # Lightweight periodic touch-up: re-resolves every allowed domain, adds any
