@@ -13,7 +13,11 @@ services:
     stdin_open: true
     tty: true
     userns_mode: keep-id
-    # init-firewall.sh がコンテナ内 netns に iptables ルールを引くのに必要
+    # init-firewall.sh がコンテナ内 netns に iptables ルールを引くのに必要。
+    # rootless podman + userns_mode: keep-id では、これらが非rootユーザー(node)の
+    # ambient set にも入り全子プロセスへ継承されるため、Dockerfile.claude の
+    # ENTRYPOINT（setpriv によるambient/inheritable剥奪）とセットで初めて
+    # 「iptablesの実消費者はsudo経由のroot(init-firewall.sh)のみ」という設計が成立する。
     cap_add:
       - NET_ADMIN
       - NET_RAW
