@@ -10,6 +10,7 @@ services:
         CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION:-latest}
         CODEX_CACHEBUST: ${CODEX_CACHEBUST:-pinned}
         ASSET_HASH: ${ASSET_HASH:-unknown}
+        BASE_IMAGE: ${BASE_IMAGE:-debian:stable}
     stdin_open: true
     tty: true
     userns_mode: keep-id

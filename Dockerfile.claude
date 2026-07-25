@@ -1,4 +1,11 @@
-FROM debian:stable
+# Base image. Default is debian:stable; projects can override via
+# .claude-container.d/base-image.txt (claude-container validates the value
+# host-side and passes it as a build arg — see guard_base_image()). FROM is
+# evaluated before COPY, so the file cannot be read directly here; ARG is the
+# only channel. The default value is duplicated in compose.yml's build.args
+# and in guard_base_image() (three places kept in sync).
+ARG BASE_IMAGE=debian:stable
+FROM ${BASE_IMAGE}
 
 ARG CLAUDE_CODE_VERSION=latest
 ARG TZ=UTC
@@ -12,9 +19,15 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Switch to HTTPS now that ca-certificates is installed
-RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
-    xargs sed -i 's|http://deb\.debian\.org|https://deb.debian.org|g'
+# Switch apt sources to HTTPS now that ca-certificates is installed. Rewrites
+# every http:// URI found (not a hardcoded deb.debian.org hostname), so this
+# doesn't silently no-op against a different mirror. The capability-assertion
+# layer below verifies no http:// URI remains, so an unrecognized rewrite
+# failure fails the build loudly instead of leaving hardening un-applied.
+RUN set -e; \
+    files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
+    [ -n "$files" ] || { echo "ERROR: no apt sources found under /etc/apt" >&2; exit 1; }; \
+    sed -i 's|http://|https://|g' $files
 
 # Install Claude Code dependencies (curl/jq for native installer; rest is dev convenience)
 # iptables/bind9-dnsutils/iproute2/sudo are for init-firewall.sh (egress allowlist)
@@ -29,14 +42,36 @@ RUN find /etc/apt -name '*.list' -o -name '*.sources' | \
 # `podman stop` working. Kept here rather than in packages.txt so a project's
 # own packages.txt can't silently drop it.
 #
+# util-linux: provides /usr/bin/setpriv, which ENTRYPOINT below uses to strip
+# ambient/inheritable capabilities at container start (claude-container-ops#33
+# security fix). Previously an implicit dependency on the base image
+# happening to include it; kept in this fixed layer for the same
+# can't-silently-drop reason as tini. The capability-assertion layer below
+# verifies it actually works, not just that the binary exists.
+#
 # xz-utils: for extracting the optional Node.js tarball (see node-version.txt
 # below). Kept in this fixed layer rather than packages.txt for the same
 # reason as tini — a project's own packages.txt can't silently drop it.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
       curl git jq fzf unzip procps tzdata \
-      iptables bind9-dnsutils iproute2 sudo tini xz-utils && \
+      iptables bind9-dnsutils iproute2 sudo tini util-linux xz-utils && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Fail the build loudly if this base image doesn't provide what the
+# container's security boundary depends on, rather than succeeding and
+# breaking silently at runtime (missing setpriv) or leaving hardening
+# un-applied (apt sources still on HTTP). This only catches honest breakage —
+# it cannot detect a base image that maliciously fakes these commands to pass
+# the checks; see README's Security Model section for that limitation.
+RUN set -e; \
+    [ -x /usr/bin/setpriv ] || { echo "ERROR: /usr/bin/setpriv not found (ENTRYPOINT requires it at this absolute path)" >&2; exit 1; }; \
+    [ -x /usr/bin/tini ]    || { echo "ERROR: /usr/bin/tini not found (used as PID1)" >&2; exit 1; }; \
+    /usr/bin/setpriv --ambient-caps=-all --inh-caps=-all /bin/true \
+      || { echo "ERROR: setpriv does not accept --ambient-caps/--inh-caps" >&2; exit 1; }; \
+    files="$(find /etc/apt -name '*.list' -o -name '*.sources')"; \
+    if grep -HE '^[^#]*http://' $files; then \
+      echo "ERROR: apt sources still contain http:// (HTTPS rewrite failed)" >&2; exit 1; fi
 
 # Install gh from GitHub's official apt repository instead of Debian's. Debian
 # trixie ships gh 2.46.0, 46 releases behind upstream, which has a known-broken
@@ -186,6 +221,16 @@ ENV PATH=/home/node/.local/bin:$PATH
 # every `-b` run).
 ARG ASSET_HASH=unknown
 LABEL claude-container.asset-hash="${ASSET_HASH}"
+
+# Records the actual base image value baked into this build, independent of
+# base-image.txt's current content. compute_asset_hash() only hashes file
+# content, so it cannot detect "changed to X, rebuilt, changed back to the
+# original value, forgot to rebuild" — the hash matches again. This label
+# lets guard_asset_drift() catch that case too. ARGs declared before FROM are
+# out of scope in this build stage, so BASE_IMAGE must be re-declared here
+# (buildkit carries the pre-FROM value through automatically).
+ARG BASE_IMAGE
+LABEL claude-container.base-image="${BASE_IMAGE}"
 
 # compose.yml adds NET_ADMIN/NET_RAW (cap_add) so init-firewall.sh can configure
 # iptables. Under rootless podman with userns_mode: keep-id, those capabilities

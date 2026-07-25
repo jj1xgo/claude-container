@@ -371,6 +371,55 @@ guard_env_boundary_keys() {
   return 0
 }
 
+# ベースイメージの検証（claude-container-ops#31）。BASE_IMAGE は env 由来の値を
+# 一切信用しない — load_env_file() は KEY=VALUE を無検査で export し、かつこの
+# ガードより前（load_env_file 呼び出し箇所）に走るため、ここで無条件に既定値から
+# 開始することで env 経由の上書きを遮断する（MCP_APPROVAL_FILE を全分岐末尾で
+# 無条件 export しているのと同じ流儀）。正しい指定先は
+# .claude-container.d/base-image.txt のみ。
+#
+# 許容範囲は docker.io の debian 公式イメージのみ（タグは自由、digest pin 可）。
+# 後続のビルドレイヤー（apt/dpkg・PEP 668・uid 1000 の node ユーザー作成）が
+# すべて Debian 前提のため。この制限は「セキュリティ境界」ではなく「サポート範囲の
+# 宣言・互換性ガード」と位置づける — .claude-container.d/ を書き換えられる攻撃者は
+# packages.txt 経由で apt の maintainer script を既にビルド時 root で実行できる
+# ため、ベースイメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、
+# claude-container-ops#31）。タグを許可リスト化せず自由にしているのは、fail-closed
+# は「恒久条件で永久に閉じ続けない逃げ道」を持つべきという設計原則のため（新しい
+# Debian スイート名が出るたびに拒否され続けるゲートを作らない）。実際の互換性は
+# Dockerfile.claude 側の能力アサーション（setpriv・apt sources 等）が担保する。
+guard_base_image() {
+  BASE_IMAGE="debian:stable"
+
+  if [[ -n "$ENV_FILE" && -f "$ENV_FILE" ]] \
+     && grep -qE '^[[:space:]]*BASE_IMAGE=' "$ENV_FILE"; then
+    guard_warn "WARNING: $ENV_FILE の BASE_IMAGE=... は無視されます。正しい指定先は .claude-container.d/base-image.txt です。"
+  fi
+
+  resolve_asset_source base-image.txt
+  if [[ "$ASSET_ORIGIN" == "missing" ]]; then
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt なし、既定値）"
+    return 0
+  fi
+
+  local value
+  value="$(grep -vE '^[[:space:]]*(#|$)' "$ASSET_PATH" | head -1 | tr -d '[:space:]')"
+  if [[ -z "$value" ]]; then
+    [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE（base-image.txt は空、既定値）"
+    return 0
+  fi
+
+  if [[ ! "$value" =~ ^(docker\.io/(library/)?)?debian:[A-Za-z0-9][A-Za-z0-9._-]*(@sha256:[0-9a-f]{64})?$ ]]; then
+    guard_fail "ERROR: $PROJECT_CONF_DIR/base-image.txt の値が許容範囲外です: $value" \
+      "docker.io の debian 公式イメージのみ許可されます（タグは自由、digest pin 可）。" \
+      "例: debian:testing, debian:trixie-20260701, debian:stable@sha256:<64桁hex>" || return 1
+  fi
+
+  BASE_IMAGE="$value"
+  [[ ${CHECK_MODE:-0} -eq 1 ]] && echo "[INFO] base image: $BASE_IMAGE"
+  return 0
+}
+
 # MCP監査ゲートの状態判定（読み取り専用部分。claude-container-ops#25で check_mcp_approval()
 # から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
 # 実処理が同一ロジックを共有するために分離した。
@@ -511,7 +560,7 @@ resolve_asset_source() {
         ASSET_ORIGIN="default"
       fi
       ;;
-    node-version.txt | codex-version.txt | allowed-ports.txt)
+    node-version.txt | codex-version.txt | allowed-ports.txt | base-image.txt)
       if [[ -f "$PROJECT_CONF_DIR/$name" ]]; then
         ASSET_PATH="$PROJECT_CONF_DIR/$name"
         ASSET_ORIGIN="project"
@@ -540,6 +589,7 @@ ASSET_HASH_TARGETS=(
   node-version.txt
   codex-version.txt
   allowed-ports.txt
+  base-image.txt
 )
 
 # 対象アセットの内容のみをハッシュする（sha256sum "$file" ではなくリダイレクトで
@@ -607,6 +657,12 @@ stage_build_context() {
     fi
   done
 
+  # base-image.txt は意図的にここでステージしない（claude-container-ops#31）。他の
+  # optional ファイルと違い、Dockerfile.claude の FROM は COPY より先に評価されるため
+  # ビルドコンテキストへ置いても読めない。値は guard_base_image() がホスト側で検証し、
+  # build arg（BASE_IMAGE）として compose 経由で渡す。resolve_asset_source() と
+  # ASSET_HASH_TARGETS には登録済み（ドリフト検知・--check 診断の対象にするため）。
+
   # 防御的アサーション: env（ランタイム設定）が万一ビルドコンテキストに紛れ込んでいたら
   # 即座にビルドを止める。将来上記ループがワイルドカードコピーに書き換えられた場合の
   # リグレッション（ホスト固有パスのイメージ焼き込み）を防ぐための安全網。
@@ -651,8 +707,9 @@ guard_asset_drift() {
   if ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
     return 0
   fi
-  local recorded_hash
+  local recorded_hash recorded_base_image
   recorded_hash=$(podman image inspect --format '{{index .Labels "claude-container.asset-hash"}}' "$IMAGE_NAME" 2>/dev/null || true)
+  recorded_base_image=$(podman image inspect --format '{{index .Labels "claude-container.base-image"}}' "$IMAGE_NAME" 2>/dev/null || true)
   if ! compute_asset_hash; then
     guard_warn "WARNING: 境界アセットのハッシュ計算に失敗したため、ドリフト確認をスキップしました。"
     return 0
@@ -661,6 +718,14 @@ guard_asset_drift() {
     guard_warn "WARNING: イメージ $IMAGE_NAME に境界アセットのハッシュラベルがありません（このドリフト検知機能の導入前にビルドされたイメージです）。-b でのリビルドを推奨します。"
   elif [[ "$recorded_hash" != "$ASSET_HASH" ]]; then
     guard_warn "WARNING: 境界アセット（entrypoint.sh・init-firewall.sh 等）がイメージのビルド後に変更されています。-b でのリビルドを推奨します。"
+  fi
+  # base-image.txt を変更 → -b → 元の値に戻して -b 忘れ、という順序では
+  # compute_asset_hash() の内容ハッシュが一致してしまい上記の比較では検知できない。
+  # 実ビルド値を記録したラベル（Dockerfile.claude の claude-container.base-image）と
+  # 現在の解決結果 $BASE_IMAGE（guard_base_image() が先に設定している前提）を
+  # 直接比較することで、この場合も検知する。
+  if [[ -n "$recorded_base_image" && -n "${BASE_IMAGE:-}" && "$recorded_base_image" != "$BASE_IMAGE" ]]; then
+    guard_warn "WARNING: ベースイメージの設定（$BASE_IMAGE）が、イメージの実ビルド値（$recorded_base_image）と異なります。-b でのリビルドを推奨します。"
   fi
   return 0
 }
@@ -705,6 +770,7 @@ check_one_project() {
   guard_secrets_dir || true
   guard_codex_dir || true
   guard_env_boundary_keys || true
+  guard_base_image || true
 
   local file
   for file in packages.txt requirements.txt allowed-domains.txt; do
@@ -870,6 +936,7 @@ guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
 guard_env_boundary_keys
+guard_base_image
 guard_asset_drift
 
 check_mcp_approval
@@ -917,11 +984,15 @@ if [[ $BUILD -eq 1 ]]; then
      && [[ "$(tr -d '[:space:]' < "$BUILD_CONTEXT_DIR/codex-version.txt")" == "latest" ]]; then
     CODEX_CACHEBUST="$(date +%s)"
   fi
-  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
+  CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
     BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false build claude-auth-workspace
 fi
 
-CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" \
+# BASE_IMAGE は build 側だけでなくここ（run 側）にも渡す。-b なしの初回起動は
+# compose の暗黙ビルドで焼かれるため、run 側に渡し忘れると初回だけ既定値でビルド
+# され、以後 -b するまで設定が効かないという無言バグになる（ASSET_HASH を両方に
+# 渡している理由と同型）。
+CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
   BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
   podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false run --rm claude-auth-workspace
