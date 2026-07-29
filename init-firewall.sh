@@ -44,7 +44,7 @@ if [ -n "${1:-}" ]; then
 fi
 
 # Ports that CHAIN-routed ACCEPT rules (add_cidr/add_cidr_tagged below) permit
-# on an otherwise-allowed IP (claude-container-ops#31). Read once here so both
+# on an otherwise-allowed IP (claude-container#31). Read once here so both
 # `init` and `--refresh-domains` modes see the same value. Does NOT apply to
 # the DNS resolver rules or the host-network rule in full_init() — those bypass
 # CHAIN entirely and stay unrestricted (see the comment where CHAIN is created).
@@ -115,7 +115,7 @@ add_cidr_tagged() {
 # (-A CHAIN -d IP/32 -p ...) before match-extension flags (-m multiport,
 # -m comment) regardless of the order they were passed on the add_cidr* call,
 # so the "-d ${ip}/32 " grep below keeps matching after the port restriction
-# (claude-container-ops#31) was added to add_cidr_tagged.
+# (claude-container#31) was added to add_cidr_tagged.
 add_or_touch_domain_ip() {
   local ip="$1" domain="$2" generation="$3"
   local existing_idx
@@ -236,7 +236,7 @@ full_init() {
   iptables -t mangle -X
 
   # Allowlist chain: one ACCEPT per allowed CIDR/IP, restricted to $ALLOWED_PORTS
-  # (add_cidr/add_cidr_tagged, claude-container-ops#31). This restriction covers
+  # (add_cidr/add_cidr_tagged, claude-container#31). This restriction covers
   # GitHub CIDRs and the tagged per-domain rules ONLY. The DNS resolver rules
   # below and the host-network rule further down bypass CHAIN entirely (they're
   # appended straight to INPUT/OUTPUT) and stay port-unrestricted.
@@ -288,7 +288,7 @@ full_init() {
   fi
 
   # Host network (gateway only), for host-side services. Scoped to the single
-  # gateway IP, not its /24 (claude-container-ops#31) — no port restriction
+  # gateway IP, not its /24 (claude-container#31) — no port restriction
   # (this bypasses CHAIN, see the note where CHAIN is created above).
   local host_ip host_network
   host_ip=$(ip route | awk '/^default/ {print $3; exit}')
@@ -372,7 +372,7 @@ full_init() {
     exit 1
   fi
   echo "Verification passed - able to reach https://api.anthropic.com as expected"
-  # Confirm the port restriction (claude-container-ops#31) actually blocks a
+  # Confirm the port restriction (claude-container#31) actually blocks a
   # non-allowed port on an otherwise-allowed IP. github.com genuinely listens
   # on port 80 (HTTP -> HTTPS redirect), so a failure here can't be confused
   # with "the remote wasn't listening" — it has to be our own rule rejecting

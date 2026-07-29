@@ -7,7 +7,7 @@ BUILD=0
 CLEAN=0
 CHECK=0
 
-# --check モード用の状態（claude-container-ops#25）。通常起動時は常に0のままで、
+# --check モード用の状態（内部運用issue参照）。通常起動時は常に0のままで、
 # guard_fail/guard_warn は従来どおり stderr 出力＋exit 1（fail-closed）として振る舞う。
 CHECK_MODE=0
 CHECK_HAS_ERROR=0
@@ -85,7 +85,7 @@ done
 
 RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
 
-# 起動台帳（claude-container-ops#25）。通常起動のたびにホスト絶対パスを記録し、
+# 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
 # --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
 # MCP_APPROVAL_STORE と同じ流儀で、load_env_file() より前・プロジェクト側 env の
 # 影響を受けない位置で固定する。
@@ -163,7 +163,7 @@ compute_project_name() {
 # freeze する。load_env_file() より前に呼ぶことで、プロジェクト側の .claude-container.d/env
 # が HOME や将来追加されうる置き場所系の変数を書き換えても、これらのパスは一切影響を
 # 受けない（env 由来の値を信用しない設計。詳細は check_mcp_approval() のコメント参照）。
-# --check モード（claude-container-ops#25）でプロジェクトごとに再算出するため関数化。
+# --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化。
 freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
@@ -176,7 +176,7 @@ freeze_project_paths() {
   BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
 }
 
-# 起動台帳への記録（claude-container-ops#25）。--clean/--check では記録しない。
+# 起動台帳への記録（内部運用issue参照）。--clean/--check では記録しない。
 # fail-closed ガードで停止する起動でも記録する（--check で診断したいのはまさに
 # そのプロジェクトのため）。台帳は補助台帳であり、記録失敗は起動を止めない
 # （fail-soft）。成功時は無出力（通常起動の出力を変えないため）。
@@ -326,7 +326,7 @@ guard_secrets_dir() {
 # 任意コマンドが実行される経路が生じるため、専用ディレクトリ（例: ~/.codex-container）を
 # 前提とする（README「利用側プロジェクトの設定」節参照）。設定済みでディレクトリが無い場合は
 # 起動を中止する（GITCONFIG_FILE/SECRETS_DIR と同じ理由: 不存在パスを bind mount すると
-# podman がホスト側に空ディレクトリを誤作成するため）。claude-container-ops#27。
+# podman がホスト側に空ディレクトリを誤作成するため）。詳細は内部運用issue参照。
 guard_codex_dir() {
   if [[ -n "${CODEX_DIR:-}" ]]; then
     CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
@@ -349,7 +349,7 @@ guard_codex_dir() {
   fi
 }
 
-# .claude-container.d/env は運用者が書く信頼入力として扱う（claude-container-ops#29）。
+# .claude-container.d/env は運用者が書く信頼入力として扱う（`claude-container#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
 # （ホスト固有パスを含みうる）は出力せず、キー名のみ列挙する。
@@ -371,7 +371,7 @@ guard_env_boundary_keys() {
   return 0
 }
 
-# ベースイメージの検証（claude-container-ops#31）。BASE_IMAGE は env 由来の値を
+# ベースイメージの検証（内部運用issue参照）。BASE_IMAGE は env 由来の値を
 # 一切信用しない — load_env_file() は KEY=VALUE を無検査で export し、かつこの
 # ガードより前（load_env_file 呼び出し箇所）に走るため、ここで無条件に既定値から
 # 開始することで env 経由の上書きを遮断する（MCP_APPROVAL_FILE を全分岐末尾で
@@ -384,7 +384,7 @@ guard_env_boundary_keys() {
 # 宣言・互換性ガード」と位置づける — .claude-container.d/ を書き換えられる攻撃者は
 # packages.txt 経由で apt の maintainer script を既にビルド時 root で実行できる
 # ため、ベースイメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、
-# claude-container-ops#31）。タグを許可リスト化せず自由にしているのは、fail-closed
+# 内部運用issue参照）。タグを許可リスト化せず自由にしているのは、fail-closed
 # は「恒久条件で永久に閉じ続けない逃げ道」を持つべきという設計原則のため（新しい
 # Debian スイート名が出るたびに拒否され続けるゲートを作らない）。実際の互換性は
 # Dockerfile.claude 側の能力アサーション（setpriv・apt sources 等）が担保する。
@@ -420,7 +420,7 @@ guard_base_image() {
   return 0
 }
 
-# MCP監査ゲートの状態判定（読み取り専用部分。claude-container-ops#25で check_mcp_approval()
+# MCP監査ゲートの状態判定（読み取り専用部分。内部運用issue対応で check_mcp_approval()
 # から分離）。書き込み・TTY確認・export は一切行わない。--check モードの診断とTOFU承認の
 # 実処理が同一ロジックを共有するために分離した。
 # 迂回防止の設計:
@@ -532,7 +532,7 @@ check_mcp_approval() {
   esac
 }
 
-# 境界アセット・ビルド時設定ファイルの解決規則（claude-container-ops#30）。2種類ある:
+# 境界アセット・ビルド時設定ファイルの解決規則（`claude-container#30`）。2種類ある:
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
 #                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
@@ -575,7 +575,7 @@ resolve_asset_source() {
   esac
 }
 
-# 境界アセットのドリフト検知（claude-container-ops#30）対象。固定順の配列で持つ
+# 境界アセットのドリフト検知（`claude-container#30`）対象。固定順の配列で持つ
 # （glob 順序はロケール・実装依存で非決定的なため）。github-meta.json は毎ビルド
 # 変わるため意図的に対象外（含めると恒久的にドリフトした状態になってしまう）。
 ASSET_HASH_TARGETS=(
@@ -647,7 +647,7 @@ stage_build_context() {
   # 大多数のプロジェクト向けに WARNING を出すとノイズになるだけ）ため、無ければ
   # 静かに空ファイルを生成する。既存3ファイルの WARNING 設計自体を見直すかどうかは
   # 別 issue で扱う。allowed-ports.txt の空の意味（既定値 443,22 の適用）は
-  # init-firewall.sh 自身が解釈する（claude-container-ops#31）。
+  # init-firewall.sh 自身が解釈する（`claude-container#31`）。
   for name in node-version.txt codex-version.txt allowed-ports.txt; do
     resolve_asset_source "$name"
     if [[ "$ASSET_ORIGIN" == "missing" ]]; then
@@ -657,7 +657,7 @@ stage_build_context() {
     fi
   done
 
-  # base-image.txt は意図的にここでステージしない（claude-container-ops#31）。他の
+  # base-image.txt は意図的にここでステージしない（内部運用issue参照）。他の
   # optional ファイルと違い、Dockerfile.claude の FROM は COPY より先に評価されるため
   # ビルドコンテキストへ置いても読めない。値は guard_base_image() がホスト側で検証し、
   # build arg（BASE_IMAGE）として compose 経由で渡す。resolve_asset_source() と
@@ -693,7 +693,7 @@ stage_build_context() {
   fi
 }
 
-# 境界アセットのドリフト検知（claude-container-ops#30）。通常起動時・--check の
+# 境界アセットのドリフト検知（`claude-container#30`）。通常起動時・--check の
 # 両方から呼ぶ（IMAGE_NAME は compute_project_name()、PROJECT_CONF_DIR は
 # freeze_project_paths() が先に設定している前提）。fail-open: 不一致は guard_warn
 # に留め、起動は止めない。理由: ドリフトは「古いが過去に承認された状態」であって
@@ -730,7 +730,7 @@ guard_asset_drift() {
   return 0
 }
 
-# --check モード（claude-container-ops#25）。1プロジェクトを診断する。呼び出し元
+# --check モード（内部運用issue参照）。1プロジェクトを診断する。呼び出し元
 # （run_check_mode）がサブシェル内で呼ぶことを前提とする（`local` の効かない
 # グローバル変数の書き換え — WORKING_DIR・PROJECT_NAME・ENV_FILE 等 — がこの
 # プロセス内に閉じ、他プロジェクトの診断や親シェルの状態を汚染しないため）。
@@ -894,7 +894,7 @@ if [[ $CLEAN -eq 1 && $# -eq 0 ]]; then
   exit 0
 fi
 
-# --check（claude-container-ops#25）: 引数なしでも起動台帳を全件診断できる必要が
+# --check（内部運用issue参照）: 引数なしでも起動台帳を全件診断できる必要が
 # あるため、「引数なし→usage」判定より前で dispatch する。
 if [[ $CHECK -eq 1 ]]; then
   run_check_mode ${POSITIONAL_ARGS[@]+"${POSITIONAL_ARGS[@]}"}
@@ -950,7 +950,7 @@ if [[ $BUILD -eq 1 ]] || ! podman image exists "$IMAGE_NAME" 2>/dev/null; then
   stage_build_context
 fi
 
-# 境界アセットのハッシュ（claude-container-ops#30）。ビルドの有無に関わらず常に
+# 境界アセットのハッシュ（`claude-container#30`）。ビルドの有無に関わらず常に
 # 現在のソース（$RUN_DIR・$PROJECT_CONF_DIR）から計算し、build と run 両方の env
 # プレフィックスへ渡す（下記）。build ブロック内だけに限定すると、-b 無しの初回
 # 起動（compose の暗黙ビルド）でラベルが空になり、直後の通常起動で必ず誤警告が出る。

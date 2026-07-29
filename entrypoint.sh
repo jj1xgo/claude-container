@@ -33,7 +33,7 @@ for f in \
   [ -f "$f" ] && sed -i "s|/home/[^/]*/\.claude|/home/node/.claude|g" "$f"
 done
 
-# MCP監査ゲート（stdio型サーバーの検知＋TTY確認、claude-container-ops#21）。
+# MCP監査ゲート（stdio型サーバーの検知＋TTY確認、内部運用issue参照）。
 # .mcp.json（project-scoped、Claude Code標準機能により自動ロードされる）のうち
 # command フィールドを持つ stdio 型サーバーは、npx 等のネットワーク取得を経ずに
 # リポジトリ同梱コードとして実行できるため、ファイアウォール・再ビルドという
@@ -43,7 +43,7 @@ done
 # 環境変数による opt-out は設けない。根拠は「.claude-container.d/env が信頼できない」
 # ではなく、このゲートが対象とする帰結（セッション開始と同時の任意コード実行）に
 # 対しては opt-out という迂回経路自体を作らない、という設計判断（README「セキュリティ
-# モデル」節、claude-container-ops#29）。env は全キー無条件で export されるため、
+# モデル」節、`claude-container#29`）。env は全キー無条件で export されるため、
 # opt-out 変数を設ければそのプロジェクト自身の env に書くだけでゲートが無効化できて
 # しまう（CLAUDE_CONTAINER_NO_FIREWALL と同じ迂回経路）。env 自体は運用者が書く
 # 信頼入力として扱っており（README同節）、この判断は env 全般の信頼性を疑うものではない。

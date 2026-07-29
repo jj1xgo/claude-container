@@ -8,7 +8,7 @@ tmp
 .claude-container.d/env
 
 # CLAUDE.md と .claude/ はメンテナ個人の開発運用ファイル（プロダクト本体ではない）。
-# private nested git リポジトリ（jj1xgo/claude-container-ops）として別管理する。
+# 別途管理するため追跡しない。
 CLAUDE.md
 .claude/
 

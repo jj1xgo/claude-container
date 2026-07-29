@@ -43,7 +43,7 @@ RUN set -e; \
 # own packages.txt can't silently drop it.
 #
 # util-linux: provides /usr/bin/setpriv, which ENTRYPOINT below uses to strip
-# ambient/inheritable capabilities at container start (claude-container-ops#33
+# ambient/inheritable capabilities at container start (claude-container#33
 # security fix). Previously an implicit dependency on the base image
 # happening to include it; kept in this fixed layer for the same
 # can't-silently-drop reason as tini. The capability-assertion layer below
@@ -139,7 +139,7 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
 
 # Install Codex CLI from npm when .claude-container.d/codex-version.txt specifies a
 # version (e.g. "0.46.0") or the literal "latest". Optional, sibling design to
-# node-version.txt above (see claude-container-ops#27 for the design rationale:
+# node-version.txt above (see the internal ops issue for the design rationale:
 # declarative opt-in file, not a general-purpose build hook). Requires npm —
 # projects opting in must also set node-version.txt (or add nodejs/npm via
 # packages.txt). "latest" resolves via npm's own dist-tag on every install, same
@@ -212,7 +212,7 @@ RUN echo "cachebust=${CACHEBUST}" \
 # Add ~/.local/bin to PATH (where native installer places the symlink)
 ENV PATH=/home/node/.local/bin:$PATH
 
-# Boundary-asset drift detection (claude-container-ops#30): the hash of
+# Boundary-asset drift detection (claude-container#30): the hash of
 # entrypoint.sh/init-firewall.sh/etc. that claude-container computed from its
 # current source at launch time, baked in as a label so a later launch can
 # detect that those sources changed since this image was built. Placed after
