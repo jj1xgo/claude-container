@@ -133,7 +133,7 @@ RUN NODE_VERSION="$(tr -d '[:space:]' < /tmp/node-version.txt)" && \
       grep " node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz\$" SHASUMS256.txt > node.sha256 && \
       [ -s node.sha256 ] && \
       sha256sum -c node.sha256 && \
-      tar -xJf "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" -C /usr/local --strip-components=1 && \
+      tar -xJf "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" --no-same-owner -C /usr/local --strip-components=1 && \
       rm -f "node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" SHASUMS256.txt node.sha256; \
     fi
 
@@ -168,12 +168,18 @@ RUN groupadd --gid 1000 node \
 RUN mkdir -p /workspace /home/node/.claude && \
   chown -R node:node /workspace /home/node/.claude
 
+# Directory ownership governs unlink/rename, so the boundary scripts below are only
+# as immutable as the directory that holds them. The optional Node.js tarball above
+# can carry its own uids into /usr/local, so pin these back to root explicitly.
+RUN chown root:root /usr/local/bin /usr/local/lib /usr/local/share
+
 # Egress firewall assets: root-owned so the node user cannot alter the allowlist
 # or the script at runtime. node may only run this exact script via sudo.
 COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY allowed-domains.txt /etc/claude-container/allowed-domains.txt
 COPY allowed-ports.txt /etc/claude-container/allowed-ports.txt
 RUN chmod 755 /usr/local/bin/init-firewall.sh && \
+  chmod 644 /etc/claude-container/allowed-domains.txt /etc/claude-container/allowed-ports.txt && \
   echo "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 
@@ -187,7 +193,14 @@ RUN chmod 755 /usr/local/bin/git-askpass.sh
 # GitHub API rate limit itself). init-firewall.sh reads only this snapshot at runtime
 # — it no longer does a live fetch. Root-owned like the other firewall assets.
 COPY github-meta.json /etc/claude-container/github-meta.json
-RUN jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null
+RUN chmod 644 /etc/claude-container/github-meta.json && \
+  jq -e '.web and .api and .git' /etc/claude-container/github-meta.json >/dev/null
+
+# Boundary asset (listed in ASSET_HASH_TARGETS): placed in root-owned /usr/local/bin
+# alongside init-firewall.sh and git-askpass.sh, so neither the file nor the directory
+# that holds it is writable by the node user at runtime (claude-container#40).
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 
 WORKDIR /workspace
 USER node
@@ -195,9 +208,6 @@ USER node
 # Persist bash history to /workspace/.claude/bash_history
 RUN echo "export PROMPT_COMMAND='mkdir -p /workspace/.claude && history -a'" >> /home/node/.bashrc \
   && echo "export HISTFILE=/workspace/.claude/bash_history" >> /home/node/.bashrc
-
-COPY --chown=node:node entrypoint.sh /home/node/entrypoint.sh
-RUN chmod +x /home/node/entrypoint.sh
 
 # Cache-bust marker: value changes on every `-b` run so this layer (and below)
 # is never reused from cache, guaranteeing the latest Claude Code is fetched.
@@ -244,4 +254,4 @@ LABEL claude-container.base-image="${BASE_IMAGE}"
 # execs (does not linger), so tini remains PID1; entrypoint.sh (and the claude
 # process it execs into) runs as its child.
 ENTRYPOINT ["/usr/bin/setpriv", "--ambient-caps=-all", "--inh-caps=-all", "/usr/bin/tini", "--"]
-CMD ["/home/node/entrypoint.sh"]
+CMD ["/usr/local/bin/entrypoint.sh"]
