@@ -82,15 +82,22 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+# -b の有無は引数解析で確定する。env からの上書き（BUILD=0）で利用者の -b が
+# 黙って無効化されるのを防ぐ（claude-container#39）
+readonly BUILD
 
 RUN_DIR="$( cd "$(dirname "$( readlink "$0" || ls -1 "$0" )")" > /dev/null && pwd -P )"
+# readonly は代入と別文にする（readonly VAR="$( ... )" はコマンド置換の失敗を握り潰し、
+# set -e にも if ! にも伝わらないため fail-closed が無言で壊れる。claude-container#39）
+readonly RUN_DIR
 
 # 起動台帳（内部運用issue参照）。通常起動のたびにホスト絶対パスを記録し、
 # --check（引数なし）で全ファミリープロジェクトを一括診断できるようにする。
-# MCP_APPROVAL_STORE と同じ流儀で、load_env_file() より前・プロジェクト側 env の
-# 影響を受けない位置で固定する。
+# MCP_APPROVAL_STORE と同じ流儀で $HOME から直接算出し、readonly でプロジェクト側 env
+# からの上書きを封じる（claude-container#39。呼び出し順序だけでは env の直接代入を防げない）。
 CC_STATE_DIR="$HOME/.local/state/claude-container"
 CC_LEDGER_FILE="$CC_STATE_DIR/projects"
+readonly CC_STATE_DIR CC_LEDGER_FILE
 
 # ============================================================
 # 関数定義セクション（--check の dispatch がこれらより後にあるよう、
@@ -196,16 +203,31 @@ record_project_in_ledger() {
   chmod 600 "$CC_LEDGER_FILE" 2>/dev/null || true
 }
 
-# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば環境変数として取り込む。
-# source だと利用側プロジェクトのファイルがホスト上で任意コード実行できてしまうため、
-# 変数代入以外の行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。
+# プロジェクトのランタイム設定ファイル（KEY=VALUE）があれば、保護変数を除いて環境変数として取り込む。
+# source だとシェル構文がホスト上で即時解釈され任意コード実行になりうるため、変数代入以外の
+# 行は無視する（値は最初の = 以降の生文字列。クォート・展開は解釈しない）。なお「source しない」
+# ことが防ぐのはこの即時解釈の経路のみで、env の値経由の間接的な経路（PATH 等）は防がない。
+#
+# 保護変数（readonly）への上書きは拒否して警告する（claude-container#39）。readonly 属性そのものが
+# 保護対象の登録簿であり、変数名リストは持たない（新しい境界変数は宣言箇所で readonly するだけで
+# 自動的に保護される）。ただし保護変数を子プロセスへ渡すときはコマンド前置代入でなく export を使う
+# こと（readonly 変数への前置代入は代入エラーになり set -euo pipefail 下で起動が止まる）。
+# ローカル変数名を _lef_ で名前空間化しているのは、bash の動的スコープにより関数内ローカルと同名の
+# env キーが export してもグローバルへ出ないため（衝突しうる名前を、通常の設定キーとは衝突しにくい
+# 専用の名前空間へ寄せる）。この3名は bash の有効な識別子であり、env キーとしては使えなくなる。
 load_env_file() {
-  local file="$1"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+  local _lef_file="$1" _lef_line _lef_key
+  while IFS= read -r _lef_line || [[ -n "$_lef_line" ]]; do
+    [[ "$_lef_line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    _lef_key="${_lef_line%%=*}"
+    # readonly 性はサブシェルで非破壊テストする（親の値を汚さず、if 条件が set -e の abort を抑止する）。
+    if ! ( export "$_lef_key=" ) 2>/dev/null; then
+      guard_warn "WARNING: $_lef_file のキー $_lef_key は読み取り専用のため無視します（スクリプトが算出・固定する境界変数、またはシェル組み込みの読み取り専用変数）。"
+      continue
+    fi
     # shellcheck disable=SC2163  # 変数名でなく KEY=VALUE 文字列の export が意図
-    export "$line"
-  done < "$file"
+    export "$_lef_line"
+  done < "$_lef_file"
 }
 
 # ランタイム設定に GH_TOKEN を直書きしても、compose.yml の environment: 経由では
@@ -591,6 +613,8 @@ ASSET_HASH_TARGETS=(
   allowed-ports.txt
   base-image.txt
 )
+# env の同名 export は配列の要素0へ代入されドリフト検知対象を偽装できるため readonly（claude-container#39）
+readonly -a ASSET_HASH_TARGETS
 
 # 対象アセットの内容のみをハッシュする（sha256sum "$file" ではなくリダイレクトで
 # 読ませる — 前者は出力にパスを含むため、同一内容のリポジトリを別パスへ clone
