@@ -770,6 +770,8 @@ check_one_project() {
   CHECK_MODE=1
   CHECK_HAS_ERROR=0
   CHECK_HAS_WARN=0
+  # env が CHECK_MODE=0 を書くと guard_warn が CHECK_HAS_WARN を立てなくなる（claude-container#39）
+  readonly CHECK_MODE
   local dir="$1" from_ledger="$2"
 
   if ! WORKING_DIR=$(cd "$dir" 2>/dev/null && pwd); then
@@ -779,6 +781,7 @@ check_one_project() {
     fi
     return 20
   fi
+  readonly WORKING_DIR
   cd "$WORKING_DIR"
   echo "[OK]   プロジェクトディレクトリ実在: $WORKING_DIR"
 
@@ -789,6 +792,10 @@ check_one_project() {
   ENV_FILE=""
   if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
     ENV_FILE="$PROJECT_CONF_DIR/env"
+    # readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+    # この経路は load_env_file が if ブロックの内側にあるため、ブロックの外へ出すと load の後になり
+    # --check だけ env の上書きを素通しする。else 分岐は load を呼ばないため露出しない。
+    readonly ENV_FILE
     echo "[OK]   .claude-container.d/env あり"
     load_env_file "$ENV_FILE"
   else
@@ -940,6 +947,7 @@ fi
 echo "RUN DIR: $RUN_DIR"
 
 WORKING_DIR=$( cd "$1" > /dev/null && pwd )
+readonly WORKING_DIR
 cd "$WORKING_DIR" || exit 1
 
 compute_project_name
@@ -959,6 +967,10 @@ ENV_FILE=""
 if [[ -f "$PROJECT_CONF_DIR/env" ]]; then
   ENV_FILE="$PROJECT_CONF_DIR/env"
 fi
+# readonly は「最後の書き込みの後」かつ「load_env_file() より前」に置く（claude-container#39）。
+# この2行を load の後ろへ動かすと、env が ENV_FILE/CHECK_MODE を上書きしてガードを沈黙させられる。
+readonly ENV_FILE
+readonly CHECK_MODE
 [[ -n "$ENV_FILE" ]] && load_env_file "$ENV_FILE"
 
 guard_env_gh_token
