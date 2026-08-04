@@ -401,8 +401,8 @@ guard_env_boundary_keys() {
 }
 
 # ベースイメージの検証（内部運用issue参照）。BASE_IMAGE は env 由来の値を
-# 一切信用しない — load_env_file() は KEY=VALUE を無検査で export し、かつこの
-# ガードより前（load_env_file 呼び出し箇所）に走るため、ここで無条件に既定値から
+# 一切信用しない — load_env_file() は保護変数（readonly）以外の KEY=VALUE を
+# そのまま export し、かつこのガードより前に走るため、ここで無条件に既定値から
 # 開始することで env 経由の上書きを遮断する（MCP_APPROVAL_FILE を全分岐末尾で
 # 無条件 export しているのと同じ流儀）。正しい指定先は
 # .claude-container.d/base-image.txt のみ。
@@ -508,7 +508,8 @@ compute_mcp_state() {
 #
 # 迂回防止の設計:
 #   - 承認記録の格納パス（MCP_APPROVAL_STORE/RECORD）は load_env_file() より前に
-#     $HOME から直接算出済み（上記）。プロジェクト側 env の影響を受けない。
+#     $HOME から直接算出し readonly にしてある。プロジェクト側 env が同名キーを
+#     書いても無視され警告が出る（claude-container#39）。
 #   - MCP_APPROVAL_FILE は本関数の全分岐の末尾で必ず export する。呼び出し元
 #     （compose.yml の ${MCP_APPROVAL_FILE:-/dev/null}）は env 経由の値を一切
 #     参照しないため、プロジェクト側が env に MCP_APPROVAL_FILE を書いても無視される。
