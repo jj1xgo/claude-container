@@ -164,13 +164,15 @@ compute_project_name() {
   hash=$(printf '%s' "$WORKING_DIR" | sha256sum | cut -c1-8)
   PROJECT_NAME="${base}-${hash}"
   IMAGE_NAME="localhost/${PROJECT_NAME}_claude-auth-workspace"
+  readonly PROJECT_NAME IMAGE_NAME
 }
 
 # プロジェクトごとの固定パス群（MCP承認記録・設定ディレクトリ・ビルドコンテキスト）を
-# freeze する。load_env_file() より前に呼ぶことで、プロジェクト側の .claude-container.d/env
-# が HOME や将来追加されうる置き場所系の変数を書き換えても、これらのパスは一切影響を
-# 受けない（env 由来の値を信用しない設計。詳細は check_mcp_approval() のコメント参照）。
-# --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化。
+# freeze する。load_env_file() より前に呼んだうえで readonly にすることで、プロジェクト側の
+# .claude-container.d/env が HOME 等を書き換えても、同名キーを直接書いても、これらのパスは
+# 一切影響を受けない（呼び出し順序だけでは直接代入を防げない。claude-container#39）。
+# --check モード（内部運用issue参照）でプロジェクトごとに再算出するため関数化（readonly は
+# ( check_one_project ) サブシェル内に閉じるためプロジェクト間で衝突しない）。
 freeze_project_paths() {
   # MCP監査ゲートのTOFU承認記録の格納パス（claude-container#28）。
   MCP_APPROVAL_STORE="$HOME/.local/state/claude-container/mcp-approvals"
@@ -181,6 +183,11 @@ freeze_project_paths() {
   # ランダムパスは使わず固定パスにすることで、ビルドキャッシュを安定させ、trap による
   # クリーンアップも不要にする。
   BUILD_CONTEXT_DIR="$RUN_DIR/.build-context/$PROJECT_NAME"
+  readonly MCP_APPROVAL_STORE MCP_APPROVAL_RECORD PROJECT_CONF_DIR BUILD_CONTEXT_DIR
+  # compose へはコマンド前置代入でなく export で渡す（readonly 変数への前置代入は
+  # 一時上書きでなく代入エラーになり、set -euo pipefail 下で起動が abort する。
+  # claude-container#39。compose.yml の context: ${BUILD_CONTEXT_DIR} が環境から解決する）
+  export BUILD_CONTEXT_DIR
 }
 
 # 起動台帳への記録（内部運用issue参照）。--clean/--check では記録しない。
@@ -1009,7 +1016,6 @@ if [[ $BUILD -eq 1 ]]; then
     CODEX_CACHEBUST="$(date +%s)"
   fi
   CACHEBUST="$(date +%s)" CODEX_CACHEBUST="$CODEX_CACHEBUST" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" \
-    BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
     podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false build claude-auth-workspace
 fi
 
@@ -1018,5 +1024,4 @@ fi
 # され、以後 -b するまで設定が効かないという無言バグになる（ASSET_HASH を両方に
 # 渡している理由と同型）。
 CONTEXT="$WORKING_DIR" CLAUDE_CONTAINER_DIR="$RUN_DIR" ASSET_HASH="$ASSET_HASH" BASE_IMAGE="$BASE_IMAGE" \
-  BUILD_CONTEXT_DIR="$BUILD_CONTEXT_DIR" \
   podman compose -f "$RUN_DIR/compose.yml" -p "$PROJECT_NAME" --in-pod false run --rm claude-auth-workspace
