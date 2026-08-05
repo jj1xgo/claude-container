@@ -564,7 +564,8 @@ check_mcp_approval() {
 
 # 境界アセット・ビルド時設定ファイルの解決規則（`claude-container#30`）。2種類ある:
 #   - fixed:       常に $RUN_DIR 固定。プロジェクト側で上書き不可
-#                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude）
+#                  （entrypoint.sh・init-firewall.sh・git-askpass.sh・Dockerfile.claude・
+#                    validate-build-input.sh）
 #   - overridable: $PROJECT_CONF_DIR にあればそちらを、無ければ $RUN_DIR の同梱デフォルトを使う
 #                  （packages.txt・requirements.txt・allowed-domains.txt）
 #   - optional:    $PROJECT_CONF_DIR にあればそちらを、無ければ「なし」（同梱デフォルトを持たない）
@@ -577,7 +578,7 @@ resolve_asset_source() {
   ASSET_PATH=""
   ASSET_ORIGIN=""
   case "$name" in
-    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude)
+    entrypoint.sh | init-firewall.sh | git-askpass.sh | Dockerfile.claude | validate-build-input.sh)
       ASSET_PATH="$RUN_DIR/$name"
       ASSET_ORIGIN="fixed"
       ;;
@@ -613,6 +614,7 @@ ASSET_HASH_TARGETS=(
   init-firewall.sh
   git-askpass.sh
   Dockerfile.claude
+  validate-build-input.sh
   packages.txt
   requirements.txt
   allowed-domains.txt
@@ -645,17 +647,20 @@ compute_asset_hash() {
   ASSET_HASH=$(printf '%s' "$combined" | sha256sum | cut -d' ' -f1)
 }
 
-# entrypoint.sh / init-firewall.sh / packages.txt / requirements.txt / allowed-domains.txt を
+# entrypoint.sh / init-firewall.sh / git-askpass.sh / validate-build-input.sh（fixed）・
+# packages.txt / requirements.txt / allowed-domains.txt（overridable）・
+# node-version.txt / codex-version.txt / allowed-ports.txt（optional）を
 # ビルドコンテキストへ集約する。packages.txt・requirements.txt・allowed-domains.txt は
 # プロジェクト側の .claude-container.d/ にあればそちらを、
 # なければ claude-container 同梱のデフォルト（空のフォールバック）を使う。
+# node-version.txt・codex-version.txt・allowed-ports.txt は無ければ静かに空ファイルを生成する。
 # 注意: .claude-container.d/env（ランタイム設定、ホスト固有パスを含みうる）はこのリストに
 # 意図的に含めない。イメージへ焼き込んではならないため（下記アサーション参照）。
 stage_build_context() {
   mkdir -p "$BUILD_CONTEXT_DIR"
 
   local name
-  for name in entrypoint.sh init-firewall.sh git-askpass.sh; do
+  for name in entrypoint.sh init-firewall.sh git-askpass.sh validate-build-input.sh; do
     resolve_asset_source "$name"
     cp "$ASSET_PATH" "$BUILD_CONTEXT_DIR/$name"
   done
