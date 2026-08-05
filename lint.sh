@@ -14,10 +14,16 @@ fi
 
 status=0
 
-scripts=()
+bash_scripts=()
+sh_scripts=()
 while IFS= read -r f; do
   [ -f "$f" ] || continue
-  head -n1 "$f" 2>/dev/null | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash' && scripts+=("$f")
+  first_line=$(head -n1 "$f" 2>/dev/null)
+  if printf '%s' "$first_line" | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash'; then
+    bash_scripts+=("$f")
+  elif printf '%s' "$first_line" | grep -qE '^#!/bin/sh'; then
+    sh_scripts+=("$f")
+  fi
 done < <(git ls-files -co --exclude-standard)
 
 # .claude/ は別途管理される場合がある
@@ -25,20 +31,30 @@ done < <(git ls-files -co --exclude-standard)
 if [ -d .claude/.git ]; then
   while IFS= read -r f; do
     [ -f ".claude/$f" ] || continue
-    head -n1 ".claude/$f" 2>/dev/null | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash' && scripts+=(".claude/$f")
+    first_line=$(head -n1 ".claude/$f" 2>/dev/null)
+    if printf '%s' "$first_line" | grep -qE '^#!/bin/bash|^#!/usr/bin/env bash'; then
+      bash_scripts+=(".claude/$f")
+    elif printf '%s' "$first_line" | grep -qE '^#!/bin/sh'; then
+      sh_scripts+=(".claude/$f")
+    fi
   done < <(git -C .claude ls-files -co --exclude-standard)
 fi
 
+scripts=("${bash_scripts[@]}" "${sh_scripts[@]}")
+
 if [ "${#scripts[@]}" -eq 0 ]; then
-  echo "ERROR: 対象の bash スクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
+  echo "ERROR: 対象のスクリプトが1つも見つかりません（git ls-files + shebang 判定）。" >&2
   exit 1
 fi
 
 echo "対象スクリプト (${#scripts[@]}):"
 printf '  %s\n' "${scripts[@]}"
 
-for f in "${scripts[@]}"; do
+for f in "${bash_scripts[@]}"; do
   bash -n "$f" || status=1
+done
+for f in "${sh_scripts[@]}"; do
+  sh -n "$f" || status=1
 done
 
 shellcheck "${scripts[@]}" || status=1
