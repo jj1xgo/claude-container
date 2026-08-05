@@ -107,8 +107,8 @@ bash history はターゲットプロジェクトの `.claude/bash_history` に�
 
 ```
 .claude-container.d/env                  # ランタイム設定（KEY=VALUE、上記「環境変数」参照）。-b 不要、gitignore 対象
-.claude-container.d/packages.txt         # apt パッケージ（1行1パッケージ、# はコメント）。-b 必須、コミット対象
-.claude-container.d/requirements.txt     # pip パッケージ（pip3 install -r にそのまま渡される）。-b 必須、コミット対象
+.claude-container.d/packages.txt         # apt パッケージ（1行1パッケージ、素のパッケージ名のみの allowlist 検証あり。行頭 # はコメント）。-b 必須、コミット対象
+.claude-container.d/requirements.txt     # pip パッケージ（名前＋extras＋バージョン指定子のみの allowlist 検証あり。URL・パス・オプション行・環境マーカー・行内空白は拒否しビルド停止。行内 # 以降はコメントとして剥がされる）。-b 必須、コミット対象
 .claude-container.d/allowed-domains.txt  # エグレス制限に追加する許可ドメイン（1行1ドメイン、# はコメント）。-b 必須、コミット対象
 .claude-container.d/node-version.txt     # 導入する Node.js のバージョン（例: 22.14.0、1行のみ）。-b 必須、コミット対象
 .claude-container.d/codex-version.txt    # 導入する Codex CLI のバージョン（例: 0.46.0 または latest、1行のみ）。-b 必須、コミット対象
@@ -248,7 +248,7 @@ GITCONFIG_FILE=~/.gitconfig
 
 この確認を挟む理由: stdio タイプのサーバーは、`npx` 等によるネットワーク越しの取得を経ずリポジトリに同梱されたコードとして実行できるため、http タイプと違ってファイアウォール・再ビルドという既存の壁を通らない。`--dangerously-skip-permissions` 下では Claude Code 本来の MCP 承認プロンプトも機能しないため（後述「セキュリティモデル」節）、この対話確認が唯一の壁になる。**環境変数による opt-out は用意していない**: `.claude-container.d/env` は保護変数（`readonly`）を除く全キーが export される設計のため、opt-out 変数もリポジトリ自身が書けてしまい、悪意あるリポジトリに対するゲートとして意味を成さない。
 
-stdio タイプのサーバーをどうしても使いたい場合は、`npx` 等の実行時取得（＝セッション開始のたびネットワーク越しに未検証のコードを取得する経路）でなく、`.claude-container.d/packages.txt` 等によるビルド時焼き込み、またはホスト側インストール＋bind mount（`EXTRA_MOUNT` 等）で導入し、バージョンを固定することを推奨する。あわせて、npm レジストリ（`registry.npmjs.org` 等）を `allowed-domains.txt` へ追加しないこと — 追加すると `npx` 経由の実行時取得が成立し、上記の対話確認を毎回強制されるだけでなく、取得するコード自体の検証が効かなくなる。
+stdio タイプのサーバーをどうしても使いたい場合は、`npx` 等の実行時取得（＝セッション開始のたびネットワーク越しに未検証のコードを取得する経路）でなく、`.claude-container.d/packages.txt` 等によるビルド時焼き込み、またはホスト側インストール＋bind mount（`EXTRA_MOUNT` 等）で導入することを推奨する。**`packages.txt` 経路ではバージョン固定ができない**（`pkg=version` 形式のバージョンピンは allowlist 検証で拒否される）ため、バージョン固定が必要な場合は bind mount 経路を採ること。あわせて、npm レジストリ（`registry.npmjs.org` 等）を `allowed-domains.txt` へ追加しないこと — 追加すると `npx` 経由の実行時取得が成立し、上記の対話確認を毎回強制されるだけでなく、取得するコード自体の検証が効かなくなる。
 
 **TOFU（Trust On First Use）による確認の省略**（claude-container#28）: 対話確認で `y` と回答すると、`claude-container` スクリプトが承認時点の stdio サーバー定義のハッシュを、ホスト側 `~/.local/state/claude-container/mcp-approvals/<project>` に記録する（`.mcp.json` 自体やコンテナ内には保存しない — コンテナ側から改変できない場所に置くのが目的）。次回以降の起動では、`.mcp.json` の stdio サーバー定義がこの記録と一致する限り対話確認を自動的にスキップし、定義が変化した場合のみ再度確認を求める。記録はプロジェクトごとに独立しており、`--clean <directory>` で当該プロジェクト分のみ、引数なしの `--clean` で全プロジェクト分をまとめて削除できる。
 
@@ -523,8 +523,8 @@ Target-project-specific claude-container configuration lives entirely under `.cl
 
 ```
 .claude-container.d/env                  # runtime settings (KEY=VALUE, see "Environment Variables" above); no -b needed, gitignored
-.claude-container.d/packages.txt         # apt packages, one per line; lines starting with # are comments; requires -b, committed
-.claude-container.d/requirements.txt     # pip packages, passed directly to pip3 install -r; requires -b, committed
+.claude-container.d/packages.txt         # apt packages, one per line; allowlist-validated (bare package names only); leading # is a comment; requires -b, committed
+.claude-container.d/requirements.txt     # pip packages; allowlist-validated (name + extras + version specifier only — URLs, paths, option lines, environment markers, and inline whitespace are rejected and fail the build); inline # onward is stripped as a comment; requires -b, committed
 .claude-container.d/allowed-domains.txt  # extra domains for the egress firewall, one per line; # for comments; requires -b, committed
 .claude-container.d/node-version.txt     # Node.js version to install (e.g. 22.14.0, single line); requires -b, committed
 .claude-container.d/codex-version.txt    # Codex CLI version to install (e.g. 0.46.0 or latest, single line); requires -b, committed
@@ -664,7 +664,7 @@ GITCONFIG_FILE=~/.gitconfig
 
 Why this confirmation exists: unlike http-type servers, stdio-type code can be bundled directly in the repository and executed without any network fetch (e.g. via `npx`), so it doesn't pass through the existing firewall/rebuild wall. Since Claude Code's own MCP approval prompt doesn't function under `--dangerously-skip-permissions` (see "Security Model" below), this confirmation is the only remaining wall. **There is deliberately no environment-variable opt-out**: `.claude-container.d/env` exports every key except protected (`readonly`) ones, so an opt-out variable could be set by the untrusted repository itself, making it meaningless as a gate against a malicious one.
 
-If you do need a stdio-type server, prefer baking it in via `.claude-container.d/packages.txt` or a host-side install + bind mount (e.g. `EXTRA_MOUNT`) with a pinned version, rather than runtime fetching via `npx` (which fetches unverified code over the network on every session start). Relatedly, don't add npm registries (e.g. `registry.npmjs.org`) to `allowed-domains.txt` — doing so would make `npx`-based runtime fetching work, which not only forces the confirmation above on every session but also removes any check on the code being fetched.
+If you do need a stdio-type server, prefer baking it in via `.claude-container.d/packages.txt` or a host-side install + bind mount (e.g. `EXTRA_MOUNT`), rather than runtime fetching via `npx` (which fetches unverified code over the network on every session start). **The `packages.txt` path can't pin a version** (`pkg=version` pins are rejected by allowlist validation) — use the bind mount path if you need a pinned version. Relatedly, don't add npm registries (e.g. `registry.npmjs.org`) to `allowed-domains.txt` — doing so would make `npx`-based runtime fetching work, which not only forces the confirmation above on every session but also removes any check on the code being fetched.
 
 **Skipping the confirmation via TOFU (Trust On First Use)** (claude-container#28): answering `y` makes the `claude-container` script record a hash of the approved stdio server definitions on the host, under `~/.local/state/claude-container/mcp-approvals/<project>` (not inside `.mcp.json` or the container — the point is to keep it somewhere the container itself can't alter). On subsequent launches, confirmation is skipped automatically as long as the stdio server definitions in `.mcp.json` still match that record; any change to the definitions triggers a fresh confirmation. Records are per-project; `--clean <directory>` removes the one for that project, and `--clean` with no argument removes all of them.
 

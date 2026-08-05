@@ -88,24 +88,33 @@ RUN mkdir -p -m 755 /etc/apt/keyrings && \
     apt-get install -y --no-install-recommends gh && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install project-specific apt packages
-# Lines starting with "-" are excluded so packages.txt cannot inject apt options
+# Install project-specific apt packages. Lines are validated by
+# validate-build-input.sh (bare Debian package names only, no version pins,
+# no leading "-"; see the script for the full allowlist) before being
+# passed to apt-get, so an attacker who can write packages.txt cannot inject
+# apt options via it.
+COPY validate-build-input.sh /tmp/
 COPY packages.txt /tmp/packages.txt
-RUN apt-get update && \
+RUN set -e; \
+    sh /tmp/validate-build-input.sh packages /tmp/packages.txt /tmp/packages.norm || exit 1; \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
-      $(grep -Ev '^\s*(#|-|$)' /tmp/packages.txt | tr '\n' ' ') && \
+      $(tr '\n' ' ' < /tmp/packages.norm) && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages (skipped when requirements.txt has no entries).
-# pip3 is not in the base image — projects using requirements.txt must add
-# python3-pip to their packages.txt.
+# Install Python packages (skipped when requirements.norm has no entries
+# after validation). pip3 is not in the base image — projects using
+# requirements.txt must add python3-pip to their packages.txt. Lines are
+# validated by validate-build-input.sh before being passed to pip3.
 COPY requirements.txt /tmp/requirements.txt
-RUN if grep -qE '^[[:space:]]*[^#[:space:]]' /tmp/requirements.txt; then \
+RUN set -e; \
+    sh /tmp/validate-build-input.sh requirements /tmp/requirements.txt /tmp/requirements.norm || exit 1; \
+    if [ -s /tmp/requirements.norm ]; then \
       command -v pip3 >/dev/null || { \
         echo "ERROR: requirements.txt has entries but pip3 is not installed." >&2; \
         echo "Add python3-pip to .claude-container.d/packages.txt." >&2; \
         exit 1; }; \
-      pip3 install -r /tmp/requirements.txt --break-system-packages; \
+      pip3 install -r /tmp/requirements.norm --break-system-packages; \
     fi
 
 # Install a specific Node.js version from the official nodejs.org tarball when
