@@ -52,10 +52,10 @@ check "podman compose config" env \
 log ""
 
 # claude-container の stage_build_context() 相当。Dockerfile.claude が要求する
-# entrypoint.sh・init-firewall.sh・git-askpass.sh・allowed-domains.txt・
-# node-version.txt・codex-version.txt・allowed-ports.txt・github-meta.json を
-# 一時ディレクトリへ集約する（packages.txt/requirements.txt は呼び出し側で
-# 個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
+# entrypoint.sh・init-firewall.sh・git-askpass.sh・validate-build-input.sh・
+# allowed-domains.txt・node-version.txt・codex-version.txt・allowed-ports.txt・
+# github-meta.json を一時ディレクトリへ集約する（packages.txt/requirements.txt は
+# 呼び出し側で個別にコピーする — プロジェクト上書きテストではソースが変わるため）。
 # リポジトリルート直下には github-meta.json が存在しないため、直接 $SCRIPT_DIR
 # をビルドコンテキストに渡すと COPY で失敗する（2026-07-02 の GitHub meta
 # スナップショット化以降の既存の不整合、Issue #1 対応の動作確認時に検出・修正）。
@@ -64,6 +64,7 @@ stage_common_context() {
   cp "${SCRIPT_DIR}/entrypoint.sh" "$dest/entrypoint.sh"
   cp "${SCRIPT_DIR}/init-firewall.sh" "$dest/init-firewall.sh"
   cp "${SCRIPT_DIR}/git-askpass.sh" "$dest/git-askpass.sh"
+  cp "${SCRIPT_DIR}/validate-build-input.sh" "$dest/validate-build-input.sh"
   cp "${SCRIPT_DIR}/allowed-domains.txt" "$dest/allowed-domains.txt"
   : > "$dest/node-version.txt"
   : > "$dest/codex-version.txt"
