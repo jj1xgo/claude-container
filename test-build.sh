@@ -345,18 +345,19 @@ run_validator_layer2() {
   rm -rf "$t"
 }
 
-# 層1・層2の実行入口。--validator-only と通常実行の両方から呼ぶ（複製しない）。
-run_validator_tests() {
+# 層1（ベクタ表・契約異常系）の実行入口。--validator-only と通常実行の両方から
+# 呼ぶ（複製しない）。層2（Dockerfile.claude 配線の静的検査）は --validator-only
+# の対象外（計画の検証手順が定める合格条件 PASS==82 は層1+契約異常系のみを指す）
+# のため、ここには含めず通常実行フロー側で別途呼ぶ。
+run_validator_layer1_and_contract() {
   log "## 層1: validate-build-input.sh ベクタ表・契約異常系テスト（claude-container#34）"
   run_validator_layer1
   run_validator_contract
-  log "## 層2: Dockerfile.claude 配線の回帰条件（claude-container#34）"
-  run_validator_layer2
   log ""
 }
 
 if [[ "${1:-}" == "--validator-only" ]]; then
-  run_validator_tests
+  run_validator_layer1_and_contract
   log "========================================"
   log "  結果: PASS=${PASS}  FAIL=${FAIL}"
   log "========================================"
@@ -462,7 +463,10 @@ podman rmi "$OVERRIDE_IMAGE" 2>/dev/null
 rm -rf "$OVERRIDE_PROJECT_DIR" "$OVERRIDE_CONTEXT_DIR"
 log ""
 
-run_validator_tests
+run_validator_layer1_and_contract
+log "## 層2: Dockerfile.claude 配線の回帰条件（claude-container#34）"
+run_validator_layer2
+log ""
 
 log "## packages.txt/requirements.txt ビルド時検証テスト（claude-container#34）"
 # 失敗期待用ヘルパ。exit≠0 だけを assert しない — 検証段階より前のレイヤー
