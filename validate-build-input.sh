@@ -59,7 +59,8 @@ trap 'rm -rf "$VBI_TMPDIR"' EXIT
 # 落とさないこと — バイト数の比較（tr -d '\000' で NUL を除いた長さと元の長さ）
 # なら、GNU grep の NUL 分割やシェル変数の切り詰めを経由しない。
 VBI_TOTAL_BYTES=$(wc -c < "$VBI_INFILE") || exit 2
-VBI_NONUL_BYTES=$(tr -d '\000' < "$VBI_INFILE" | wc -c) || exit 2
+tr -d '\000' < "$VBI_INFILE" > "$VBI_TMPDIR/nonul" || exit 2
+VBI_NONUL_BYTES=$(wc -c < "$VBI_TMPDIR/nonul") || exit 2
 if [ "$VBI_TOTAL_BYTES" -ne "$VBI_NONUL_BYTES" ]; then
   echo "error: $VBI_INFILE contains NUL bytes (rejected)" >&2
   exit 1
