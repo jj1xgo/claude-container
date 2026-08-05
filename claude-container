@@ -411,8 +411,10 @@ guard_env_boundary_keys() {
 # 後続のビルドレイヤー（apt/dpkg・PEP 668・uid 1000 の node ユーザー作成）が
 # すべて Debian 前提のため。この制限は「セキュリティ境界」ではなく「サポート範囲の
 # 宣言・互換性ガード」と位置づける — .claude-container.d/ を書き換えられる攻撃者は
-# packages.txt 経由で apt の maintainer script を既にビルド時 root で実行できる
-# ため、ベースイメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、
+# packages.txt 経由で apt の maintainer script を既にビルド時 root で実行でき、
+# requirements.txt 経由の任意 PyPI 名指定でも sdist の setup.py がビルド時 root で
+# 実行される経路が原理的に残る（PyPI は open publishing のため）。いずれもベース
+# イメージ名だけを縛る防御効果は限定的（Codex 諮問による指摘、
 # 内部運用issue参照）。タグを許可リスト化せず自由にしているのは、fail-closed
 # は「恒久条件で永久に閉じ続けない逃げ道」を持つべきという設計原則のため（新しい
 # Debian スイート名が出るたびに拒否され続けるゲートを作らない）。実際の互換性は
@@ -817,6 +819,7 @@ check_one_project() {
   guard_base_image || true
 
   local file
+  local vbi_path vbi_target vbi_kind vbi_rc
   for file in packages.txt requirements.txt allowed-domains.txt; do
     if [[ -f "$PROJECT_CONF_DIR/$file" ]]; then
       echo "[OK]   $file: プロジェクト側設定あり"
@@ -824,6 +827,35 @@ check_one_project() {
       CHECK_HAS_WARN=1
       echo "[WARN] WARNING: $PROJECT_CONF_DIR/$file not found; using claude-container's generic empty fallback ($file). If this project needs packages/domains here, create .claude-container.d/$file."
     fi
+
+    # packages.txt/requirements.txt の内容診断（validate-build-input.sh を
+    # outfile なしで dry-run 呼び出し）。allowed-domains.txt はスコープ外
+    # （ドメイン名に packages 用 regex を当てると誤検知するため、claude-container#34）。
+    # スクリプトのパスは resolve_asset_source() の fixed 解決（RUN_DIR 起点）を使う
+    # — check_one_project() は上で $WORKING_DIR（利用側プロジェクトのルート）へ
+    # cd 済みのため、相対パスで呼ぶと利用側の同名ファイルが実行され fixed の意味が消える。
+    # 終了コードの解釈は validate-build-input.sh の契約（中核設計2）に一本化し、
+    # --check 側で grep 等の終了コードを独自に解釈しない。
+    case "$file" in
+      packages.txt | requirements.txt)
+        resolve_asset_source "validate-build-input.sh"
+        vbi_path="$ASSET_PATH"
+        resolve_asset_source "$file"
+        vbi_target="$ASSET_PATH"
+        vbi_kind="${file%.txt}"
+        # set -e 下で validate-build-input.sh は正常時（不正行なし）以外に
+        # rc 1/2 を返しうるため、必ず || で握る（素の "; rc=$?" は set -e により
+        # 到達前にシェルが終了する）。
+        vbi_rc=0
+        sh "$vbi_path" "$vbi_kind" "$vbi_target" || vbi_rc=$?
+        case "$vbi_rc" in
+          0) echo "[OK]   $file: 内容診断 OK" ;;
+          1) guard_warn "[WARN] $file に仕様外の行があります（詳細は上記の標準エラー出力を参照）" ;;
+          2) guard_warn "[WARN] $file の内容診断ができませんでした" ;;
+          *) guard_warn "[WARN] $file の内容診断ができませんでした（終了コード: $vbi_rc）" ;;
+        esac
+        ;;
+    esac
   done
 
   if ! command -v podman >/dev/null 2>&1; then
