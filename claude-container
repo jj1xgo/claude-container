@@ -901,7 +901,8 @@ check_one_project() {
 }
 
 # --check のドライバ。引数があれば各ディレクトリを、なければ起動台帳
-# （$CC_LEDGER_FILE）の全プロジェクトを診断する。非対話・書き込みなし。
+# （$CC_LEDGER_FILE）の全プロジェクトを診断する。非対話。対象リポジトリと
+# `.build-context/` は変更しない（`/tmp` の一時ファイルは除く）。
 run_check_mode() {
   local -a targets=()
   local -a from_ledger_flags=()
