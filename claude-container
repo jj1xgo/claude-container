@@ -378,6 +378,23 @@ guard_codex_dir() {
   fi
 }
 
+# 第2の追加マウント（SHARED_MOUNT）の参照。任意設定のため未設定時は何もしない。
+# 複数プロジェクトから同一ホストディレクトリ（共有ノート置き場等）を固定名 /shared で
+# 参照するための opt-in（claude-container#46）。EXTRA_MOUNT（/data）と独立したスロット。
+# 秘密情報を置く前提のディレクトリではないためパーミッション警告は行わない（EXTRA_MOUNT と
+# 同様）。設定済みでディレクトリが無い場合は起動を中止する（GITCONFIG_FILE/SECRETS_DIR/
+# CODEX_DIR と同じ理由: 不存在パスを bind mount すると podman がホスト側に空ディレクトリを
+# 誤作成するため）。
+guard_shared_mount() {
+  if [[ -n "${SHARED_MOUNT:-}" ]]; then
+    SHARED_MOUNT="${SHARED_MOUNT/#\~\//$HOME/}"
+    export SHARED_MOUNT
+    if [[ ! -d "$SHARED_MOUNT" ]]; then
+      guard_fail "ERROR: SHARED_MOUNT=$SHARED_MOUNT が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
+    fi
+  fi
+}
+
 # .claude-container.d/env は運用者が書く信頼入力として扱う（`claude-container#29`）。
 # ただし信頼入力であっても、そのプロジェクトの env が境界に影響するキーへ実際に
 # 触れているかは起動前に一覧できる方が安全なため、可視化する。値そのもの
@@ -389,7 +406,7 @@ guard_env_boundary_keys() {
   fi
   local key
   local -a boundary_keys_found=()
-  for key in EXTRA_MOUNT SECRETS_DIR GITCONFIG_FILE CODEX_DIR; do
+  for key in EXTRA_MOUNT SHARED_MOUNT SECRETS_DIR GITCONFIG_FILE CODEX_DIR; do
     if grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
       boundary_keys_found+=("$key")
     fi
@@ -815,6 +832,7 @@ check_one_project() {
   guard_gitconfig_file || true
   guard_secrets_dir || true
   guard_codex_dir || true
+  guard_shared_mount || true
   guard_env_boundary_keys || true
   guard_base_image || true
 
@@ -1017,6 +1035,7 @@ guard_legacy_vars
 guard_gitconfig_file
 guard_secrets_dir
 guard_codex_dir
+guard_shared_mount
 guard_env_boundary_keys
 guard_base_image
 guard_asset_drift

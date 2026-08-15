@@ -71,11 +71,9 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 ```
 
 - **起動台帳**: 通常起動（`--clean`/`--check` を除く）のたびに、対象ディレクトリのホスト絶対パスが `~/.local/state/claude-container/projects` へ自動記録される（手動メンテ不要）。`--check` を引数なしで実行すると、この台帳に記録された全プロジェクトを一括診断する。`--clean <directory>` はそのプロジェクトを台帳からも削除し、`--clean`（引数なし）は台帳自体を削除する。シンボリックリンク経由と実体パスで起動すると別エントリとして記録される点に注意（`compute_project_name()` のプロジェクト識別基準と同じ）。
-- **検査項目**: legacy トークン変数（`GH_TOKEN_FILE` 等）・`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
+- **検査項目**: legacy トークン変数（`GH_TOKEN_FILE` 等）・`SHARED_MOUNT`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` の存在とレイアウト（`noexport/` 残存等）・パーミッション・`packages.txt`/`requirements.txt`/`allowed-domains.txt` の有無・イメージの既ビルド有無（`podman` 利用可能な場合のみ）・MCP 監査ゲートの承認状態・`packages.txt`/`requirements.txt` の内容診断。**起動時ガードと内容診断は別モードで動く**: 上記の有無チェック等は通常起動時の fail-closed ガードと同一の関数を共有し診断結果と実際の起動挙動が乖離しないが、内容診断（`packages.txt`/`requirements.txt` の allowlist 検証）は `--check` 専用の助言診断で、通常起動時の強制点（`Dockerfile.claude` の `RUN`）とは別に呼ばれる。ただし両者は同じ `validate-build-input.sh` を呼ぶため、判定ロジック自体が乖離することはない。
 - **非対話・対象リポジトリは不変**: `--check` は TTY 確認を一切行わない（MCP stdio 型サーバーが未承認の場合は「初回起動時に確認プロンプトが出ます」と報告するのみ）。台帳に記録があるが実体が見つからないプロジェクトも FAIL として報告するだけで、台帳を黙って書き換えない。**保証の範囲は「対象リポジトリと `.build-context/` を変更しない」こと**（内容診断は `mktemp` 経由で `/tmp` 配下に作業ファイルを必ず作るため、無限定の「書き込みゼロ」ではない）。
 - **終了コード**: 診断対象のいずれかが FAIL の場合は非0、それ以外は0で終了する。`-b` は `--check` と併用しても無視される。
-
-### 環境変数
 
 ### 環境変数
 
@@ -85,6 +83,7 @@ apt/pip パッケージは `.claude-container.d/`（後述）でプロジェク�
 |---|---|---|
 | `CLAUDE_CONFIG_DIR` | `~` | `.claude.json` と `.claude/` が置かれているディレクトリ |
 | `EXTRA_MOUNT` | `/dev/null` | コンテナ内 `/data` に追加でマウントするホスト側パス |
+| `SHARED_MOUNT` | `/dev/null` | コンテナ内 `/shared` に追加でマウントするホスト側パス。複数プロジェクトからの共有ディレクトリ参照向け（`EXTRA_MOUNT` と併用可）。設定済みでパスが無い場合は起動を中止 |
 | `TZ` | ホストから自動検出 | コンテナ内のタイムゾーン |
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | `1` でエグレス制限（後述）を無効化 |
 | `GITCONFIG_FILE` | (unset) | コンテナ内 `~/.gitconfig` として read-only マウントするホスト側 git 設定ファイルのパス（後述） |
@@ -308,7 +307,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ### コンテナ間の永続化
 
-コンテナは `--rm` で起動するため終了時に内部の状態は消えるが、以下はホストに bind mount されているため**コンテナを再起動しても保持される**。
+コンテナは `--rm` で起動するため終了時に内部の状態は消えるが、以下の常時マウントはホストに bind mount されているため**コンテナを再起動しても保持される**（`EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR` 等の opt-in マウントは、設定した本人がホスト側に同じパスを維持する限り同様に保持されるが、任意設定のためここには含めない — 一覧は「環境変数」節参照）。
 
 | コンテナ内パス | ホスト側 | 内容 |
 |---|---|---|
@@ -356,7 +355,7 @@ Claude Code の自動アップデートは `compose.yml` の `DISABLE_AUTOUPDATE
 
 ### セキュリティモデル
 
-Claude は `--dangerously-skip-permissions` で起動するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界 — マウントされたワークスペースと `/data` への読み書きアクセスを持つ。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしないこと。
+Claude は `--dangerously-skip-permissions` で起動するため、ツール使用の確認プロンプトなしに動作する。ガードレールはコンテナ境界 — マウントされたワークスペースと `/data`・`/shared` への読み書きアクセスを持つ。意図したプロジェクトスコープ外の機密データを含むディレクトリはマウントしないこと。`SHARED_MOUNT`（`/shared`）は同じホストパスを設定した全プロジェクトのコンテナが完全な rw アクセスを持つ共有領域のため、相互に信頼できるプロジェクト間でのみ設定すること。
 
 ネットワークは既定で `init-firewall.sh` によるエグレス許可リストで制限される。Claude Code に必要なエンドポイント（Anthropic API・GitHub 等）と `.claude-container.d/allowed-domains.txt` で指定したドメイン以外への外向き通信は遮断されるため、悪意ある pip パッケージやプロンプトインジェクションが認証情報（`~/.claude.json`）やソースコードを任意の外部ホストへ送信することを防ぐ。開放が必要な場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1` を書いて無効化できる（自己責任）。
 
@@ -372,9 +371,9 @@ Claude は `--dangerously-skip-permissions` で起動するため、ツール使
 
 **`.claude-container.d/env` は信頼できないリポジトリでは攻撃面になる**: `env` は保護変数（`readonly`）を除きキーを選ばず export される設計のため（前述「環境変数」節）、`CLAUDE_CONTAINER_NO_FIREWALL=1` のようなセキュリティ機構の opt-out 変数も、そのプロジェクト自身の `.claude-container.d/env` に書かれていれば有効になってしまう。信頼できないリポジトリを起動する前に `.claude-container.d/env` の中身を確認すること。
 
-**`.mcp.json` にだけ追加ゲートがあるのは、入力の信頼度でなく帰結の重大性で線を引いているため**（`claude-container#29`）: リポジトリ同梱の設定（`.claude-container.d/env` と `.mcp.json` の両方）は、いずれも起動前に運用者がレビューする責任範囲にある——同じリポジトリに同梱される以上、どちらか一方だけを「信頼できる」「信頼できない」と区別する根拠は無い。claude-container が追加の対話ゲートを設けるのは、レビューを怠った場合の帰結が「セッション開始と同時の任意コード実行」になる場合に限る（＝ `.mcp.json` の stdio 型）。`env` のキーは `.mcp.json` の stdio 型サーバーのように「セッション開始と同時に」コードを実行するわけではないが、`PATH` 等の実行時名前解決に関わるキーを通じてホスト側でのコード実行に至りうる（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)）。この経路は本ゲートの対象外である。別軸として、境界へ影響するキー（`EXTRA_MOUNT`・`SECRETS_DIR`・`GITCONFIG_FILE`・`CODEX_DIR` 等。`PATH` のような実行時名前解決キーはこの一覧の対象外）の使用は起動時に一覧して気づけるようにしている（`guard_env_boundary_keys()`）。この可視化は fail-closed ではない——`env` は運用者自身が書く設定という前提は変えていないため。
+**`.mcp.json` にだけ追加ゲートがあるのは、入力の信頼度でなく帰結の重大性で線を引いているため**（`claude-container#29`）: リポジトリ同梱の設定（`.claude-container.d/env` と `.mcp.json` の両方）は、いずれも起動前に運用者がレビューする責任範囲にある——同じリポジトリに同梱される以上、どちらか一方だけを「信頼できる」「信頼できない」と区別する根拠は無い。claude-container が追加の対話ゲートを設けるのは、レビューを怠った場合の帰結が「セッション開始と同時の任意コード実行」になる場合に限る（＝ `.mcp.json` の stdio 型）。`env` のキーは `.mcp.json` の stdio 型サーバーのように「セッション開始と同時に」コードを実行するわけではないが、`PATH` 等の実行時名前解決に関わるキーを通じてホスト側でのコード実行に至りうる（[`#44`](https://github.com/jj1xgo/claude-container/issues/44)）。この経路は本ゲートの対象外である。別軸として、境界へ影響するキー（`EXTRA_MOUNT`・`SHARED_MOUNT`・`SECRETS_DIR`・`GITCONFIG_FILE`・`CODEX_DIR` 等。`PATH` のような実行時名前解決キーはこの一覧の対象外）の使用は起動時に一覧して気づけるようにしている（`guard_env_boundary_keys()`）。この可視化は fail-closed ではない——`env` は運用者自身が書く設定という前提は変えていないため。
 
-起動時の可視化を実際に確認したい場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
+起動時の可視化を実際に確認したい場合は `.claude-container.d/env` に `CLAUDE_CONTAINER_NO_FIREWALL=1`（または `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`）を書いて起動する。値そのものはログに出さず、キー名のみを一覧する。
 
 `SECRETS_DIR`（前述「GitHub トークンの配線」節）を設定した場合、上記「許可済みサービス自体への送信」というリスクが受動的なものから能動的なものに変わる: プロンプトインジェクションや悪意あるパッケージがコンテナ内からトークンを読み取り（メイン PAT はファイルとして、MCP／issues 用 PAT は export された環境変数として）、そのスコープ内で GitHub 等に書き込める。緩和策は各 fine-grained PAT のスコープ最小化（対象リポジトリ限定・短期限）で、被害を該当リポジトリでの操作に構造的に限定すること。設計上、export されるのは issues 限定等スコープを絞ったトークンのみに留め、広い権限は非 export（明示読みという一手間の壁の向こう）に置くことでこのリスクの既定値を下げている（「GitHub トークンの配線」節の設計原則参照）。`SECRETS_DIR` は汎用機構であるため、この能動的リスクは GitHub トークンに限らず持ち込んだ全シークレットに及ぶ（1コンテナに持ち込むのは実際に使う最小本数に留めること — 前述）。
 
@@ -492,7 +491,7 @@ In a setup where multiple family projects launch by directly invoking this local
 ```
 
 - **Launch ledger**: every normal launch (excluding `--clean`/`--check`) automatically records the target directory's host absolute path in `~/.local/state/claude-container/projects` (no manual maintenance needed). Running `--check` with no arguments diagnoses every project in this ledger. `--clean <directory>` also removes that project from the ledger; `--clean` (no directory) removes the ledger file itself. Launching via a symlink vs. the real path records separate entries (same identity rule as `compute_project_name()`).
-- **What's checked**: legacy token variables (e.g. `GH_TOKEN_FILE`), `GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` existence and layout (e.g. leftover `noexport/`), permissions, presence of `packages.txt`/`requirements.txt`/`allowed-domains.txt`, whether the image is already built (only when `podman` is available), MCP audit gate approval state, and content validation of `packages.txt`/`requirements.txt`. **Launch-time guards and content validation run in separate modes**: the presence checks etc. above share the exact same guard functions used at normal launch time, so the diagnosis can't drift from actual launch behavior. Content validation (allowlist validation of `packages.txt`/`requirements.txt`) is a `--check`-only advisory diagnosis, called separately from the normal-launch enforcement point (the `RUN` in `Dockerfile.claude`) — but both call the same `validate-build-input.sh`, so the validation logic itself can't drift.
+- **What's checked**: legacy token variables (e.g. `GH_TOKEN_FILE`), `SHARED_MOUNT`/`GITCONFIG_FILE`/`SECRETS_DIR`/`CODEX_DIR` existence and layout (e.g. leftover `noexport/`), permissions, presence of `packages.txt`/`requirements.txt`/`allowed-domains.txt`, whether the image is already built (only when `podman` is available), MCP audit gate approval state, and content validation of `packages.txt`/`requirements.txt`. **Launch-time guards and content validation run in separate modes**: the presence checks etc. above share the exact same guard functions used at normal launch time, so the diagnosis can't drift from actual launch behavior. Content validation (allowlist validation of `packages.txt`/`requirements.txt`) is a `--check`-only advisory diagnosis, called separately from the normal-launch enforcement point (the `RUN` in `Dockerfile.claude`) — but both call the same `validate-build-input.sh`, so the validation logic itself can't drift.
 - **Non-interactive, target repo unchanged**: `--check` never prompts over TTY (an unapproved stdio-type MCP server is reported as "a confirmation prompt will appear at first launch" only). A ledger entry whose directory no longer exists is reported as FAIL without silently rewriting the ledger. **The guarantee's scope is "does not modify the target repository or `.build-context/`"** (content validation always creates working files under `/tmp` via `mktemp`, so "no writes" isn't unqualified).
 - **Exit code**: non-zero if any diagnosed project has a FAIL, zero otherwise. `-b` is ignored when combined with `--check`.
 
@@ -504,6 +503,7 @@ Place a `.claude-container.d/env` file at the root of the **target project** to 
 |---|---|---|
 | `CLAUDE_CONFIG_DIR` | `~` | Directory containing `.claude.json` and `.claude/` |
 | `EXTRA_MOUNT` | `/dev/null` | Additional host path to mount at `/data` inside the container |
+| `SHARED_MOUNT` | `/dev/null` | Additional host path to mount at `/shared` inside the container. For sharing a directory across multiple projects (can be used together with `EXTRA_MOUNT`). Launch is aborted if set but the path doesn't exist |
 | `TZ` | Auto-detected from host | Timezone inside the container |
 | `CLAUDE_CONTAINER_NO_FIREWALL` | (unset) | Set to `1` to disable the egress firewall (see below) |
 | `GITCONFIG_FILE` | (unset) | Path on the host to a git config file to mount read-only as `~/.gitconfig` inside the container (see below) |
@@ -727,7 +727,7 @@ Claude Code's auto-updater is disabled via `DISABLE_AUTOUPDATER: "1"` in `compos
 
 ### Persistence Across Container Runs
 
-Containers start with `--rm`, so internal state is lost on exit. However, the following bind mounts are **preserved across restarts**:
+Containers start with `--rm`, so internal state is lost on exit. However, the following always-on bind mounts are **preserved across restarts** (opt-in mounts such as `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR` persist the same way as long as you keep the host-side path in place, but they're omitted here since they're optional — see the "Environment Variables" section for the full list):
 
 | Container path | Host path | Contents |
 |---|---|---|
@@ -775,7 +775,7 @@ This protection ships as `examples/hooks/block-pr-approve.sh` in this repository
 
 ### Security Model
 
-Claude runs with `--dangerously-skip-permissions`, meaning it operates without tool-use confirmation prompts. The container boundary is the guardrail — Claude has full read/write access to the mounted workspace and `/data`. Do not mount directories containing sensitive data outside the intended project scope.
+Claude runs with `--dangerously-skip-permissions`, meaning it operates without tool-use confirmation prompts. The container boundary is the guardrail — Claude has full read/write access to the mounted workspace, `/data`, and `/shared`. Do not mount directories containing sensitive data outside the intended project scope. `SHARED_MOUNT` (`/shared`) is a shared area where every container that has the same host path configured gets full rw access — only set it across projects that trust each other.
 
 Network access is restricted by default via the `init-firewall.sh` egress allowlist. Outbound traffic to anything other than the endpoints Claude Code needs (Anthropic API, GitHub, etc.) and the domains listed in `.claude-container.d/allowed-domains.txt` is blocked, preventing malicious pip packages or prompt injection from exfiltrating credentials (`~/.claude.json`) or source code to arbitrary hosts. If you need unrestricted network access, set `CLAUDE_CONTAINER_NO_FIREWALL=1` in `.claude-container.d/env` (at your own risk).
 
@@ -791,9 +791,9 @@ This guardrail only holds if Claude (and its children) cannot rewrite the allowl
 
 **`.claude-container.d/env` is an attack surface for untrusted repositories**: since `env` exports every key except protected (`readonly`) ones (see "Environment Variables" above), a security opt-out like `CLAUDE_CONTAINER_NO_FIREWALL=1` takes effect if it's simply present in that project's own `.claude-container.d/env`. Review the contents of `.claude-container.d/env` before launching an untrusted repository.
 
-**`.mcp.json` is the only one that gets an extra gate — because the line is drawn by the severity of the consequence, not by input trustworthiness** (`claude-container#29`): repository-bundled configuration (both `.claude-container.d/env` and `.mcp.json`) is, either way, the operator's responsibility to review before launch — there's no basis for calling one "trusted" and the other "untrusted" when both ship in the same repository. claude-container adds an extra interactive gate only where skipping that review leads to "arbitrary code execution at session start" (i.e. `.mcp.json`'s stdio-type servers). `env` keys don't execute code "at session start" the way a stdio-type server does, but keys tied to runtime name resolution (e.g. `PATH`) can still lead to code execution on the host ([`#44`](https://github.com/jj1xgo/claude-container/issues/44)). That path is outside this gate. Separately, the use of boundary-affecting keys (`EXTRA_MOUNT`, `SECRETS_DIR`, `GITCONFIG_FILE`, `CODEX_DIR`, etc. — runtime name-resolution keys like `PATH` are not covered by this list) is surfaced at launch time so it can't go unnoticed (`guard_env_boundary_keys()`). This visibility is not fail-closed — the premise that `env` is something the operator writes themselves is unchanged.
+**`.mcp.json` is the only one that gets an extra gate — because the line is drawn by the severity of the consequence, not by input trustworthiness** (`claude-container#29`): repository-bundled configuration (both `.claude-container.d/env` and `.mcp.json`) is, either way, the operator's responsibility to review before launch — there's no basis for calling one "trusted" and the other "untrusted" when both ship in the same repository. claude-container adds an extra interactive gate only where skipping that review leads to "arbitrary code execution at session start" (i.e. `.mcp.json`'s stdio-type servers). `env` keys don't execute code "at session start" the way a stdio-type server does, but keys tied to runtime name resolution (e.g. `PATH`) can still lead to code execution on the host ([`#44`](https://github.com/jj1xgo/claude-container/issues/44)). That path is outside this gate. Separately, the use of boundary-affecting keys (`EXTRA_MOUNT`, `SHARED_MOUNT`, `SECRETS_DIR`, `GITCONFIG_FILE`, `CODEX_DIR`, etc. — runtime name-resolution keys like `PATH` are not covered by this list) is surfaced at launch time so it can't go unnoticed (`guard_env_boundary_keys()`). This visibility is not fail-closed — the premise that `env` is something the operator writes themselves is unchanged.
 
-To see this visibility in action, write `CLAUDE_CONTAINER_NO_FIREWALL=1` (or `EXTRA_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`) to `.claude-container.d/env` and launch — the value itself is never logged, only the key name.
+To see this visibility in action, write `CLAUDE_CONTAINER_NO_FIREWALL=1` (or `EXTRA_MOUNT`/`SHARED_MOUNT`/`SECRETS_DIR`/`GITCONFIG_FILE`/`CODEX_DIR`) to `.claude-container.d/env` and launch — the value itself is never logged, only the key name.
 
 If `SECRETS_DIR` (see "GitHub Token Wiring" above) is set, the "exfiltration to allowed services themselves" risk above stops being passive: prompt injection or a malicious package running in the container can read a token (the main PAT as a file, the MCP/issues PAT as an exported env var) and write to GitHub (or elsewhere) within its scope. The mitigation is scoping each fine-grained PAT down (single repository, short expiration), which structurally limits the blast radius to that repository. By design, only tightly-scoped tokens (e.g. issues-only) are exported at all — broad privilege sits behind the non-exported, explicit-read wall instead, which lowers this risk's default (see the design principle in "GitHub Token Wiring"). Since `SECRETS_DIR` is a generic mechanism, this active risk extends to every secret you bring in, not just GitHub tokens (again, bring in only the minimum set a given project actually needs — see above).
 
