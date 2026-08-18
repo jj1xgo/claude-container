@@ -359,7 +359,11 @@ guard_secrets_dir() {
 guard_codex_dir() {
   if [[ -n "${CODEX_DIR:-}" ]]; then
     CODEX_DIR="${CODEX_DIR/#\~\//$HOME/}"
+    CODEX_DIR="${CODEX_DIR%/}"
     export CODEX_DIR
+    if [[ "$CODEX_DIR" == "$HOME/.codex" ]]; then
+      guard_fail "ERROR: CODEX_DIR が実ホストの \$HOME/.codex を指しています。コンテナ側のコードが config.toml（notify フック・MCP サーバー定義）を汚染し、ホストで codex 実行時に任意コマンドが実行される経路になるため、専用ディレクトリ（例: ~/.codex-container）を指定してください。起動を中止します。" || return 1
+    fi
     if [[ ! -d "$CODEX_DIR" ]]; then
       guard_fail "ERROR: CODEX_DIR=$CODEX_DIR が見つかりません（存在しないかディレクトリではありません）。起動を中止します。" || return 1
     fi
