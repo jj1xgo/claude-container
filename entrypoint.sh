@@ -74,7 +74,14 @@ if [ -f "$MCP_CONFIG" ]; then
       if [ -n "$recorded_hash" ]; then
         echo "  (note: definition changed since the last host-side approval)" >&2
       fi
+      # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
+      # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
+      # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。claude-container 側の
+      # 同種の表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
       while IFS=$'\t' read -r mcp_name mcp_cmd mcp_args; do
+        mcp_name=$(printf '%s' "$mcp_name" | LC_ALL=C tr -d '\000-\037\177')
+        mcp_cmd=$(printf '%s' "$mcp_cmd" | LC_ALL=C tr -d '\000-\037\177')
+        mcp_args=$(printf '%s' "$mcp_args" | LC_ALL=C tr -d '\000-\037\177')
         echo "  - $mcp_name: $mcp_cmd $mcp_args" >&2
       done <<<"$stdio_servers"
       printf 'Allow these MCP servers to start? [y/N] ' >&2

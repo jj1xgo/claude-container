@@ -559,7 +559,11 @@ check_mcp_approval() {
       ;;
     pending)
       echo "WARNING: $WORKING_DIR/.mcp.json declares stdio-type MCP server(s) that changed since last approval (or have never been approved). Their code runs immediately at session start and can read all exported secrets:" >&2
-      echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' >&2
+      # .mcp.json はプロジェクト側リポジトリの一部で攻撃者が制御しうるため、この確認プロンプトが
+      # 唯一の人間ゲートになる。制御文字（ANSIエスケープ等）を除去してからでないと、表示を偽装する
+      # 「ターミナル・スプーフィング」に無防備になる（claude-container#35）。entrypoint.sh 側の同種の
+      # 表示ロジックと同一のサニタイズ方式（LC_ALL=C tr -d '\000-\037\177'）を使うこと（同期必須）。
+      echo "$MCP_STDIO_JSON" | jq -r '.[] | "  - \(.key): \(.value.command) \((.value.args // []) | join(" "))"' | LC_ALL=C tr -d '\000-\037\177' >&2
       printf 'Allow these MCP servers to start and remember this approval? [y/N] ' >&2
       local mcp_confirm=""
       if ! read -r mcp_confirm </dev/tty 2>/dev/null; then
